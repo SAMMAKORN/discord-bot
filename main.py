@@ -147,17 +147,17 @@ class UsageKeyModal(discord.ui.Modal, title="🔑 First-Time Setup — Enter Vir
             if status == 401:
                 msg = (
                     "🔐 **Authentication failed.** Your virtual key may be invalid or expired.\n"
-                    "Use **`/rese-key`** to update your key."
+                    "Use **`/reset-key`** to update your key."
                 )
             elif status == 404:
                 msg = (
                     "❌ Key not found. The virtual key may have been deleted.\n"
-                    "Use **`/rese-key`** to register a new key."
+                    "Use **`/reset-key`** to register a new key."
                 )
             else:
                 msg = (
                     f"❌ Error fetching usage data (HTTP {status}).\n"
-                    "Use **`/rese-key`** to update your key."
+                    "Use **`/reset-key`** to update your key."
                 )
             await interaction.followup.send(msg, ephemeral=True)
         except Exception as e:
@@ -231,17 +231,17 @@ async def usage(interaction: discord.Interaction):
         if status == 401:
             msg = (
                 "🔐 **Authentication failed.** Your virtual key may be invalid or expired.\n"
-                "Use **`/rese-key`** to update your key."
+                "Use **`/reset-key`** to update your key."
             )
         elif status == 404:
             msg = (
                 "❌ Key not found. The virtual key may have been deleted.\n"
-                "Use **`/rese-key`** to register a new key."
+                "Use **`/reset-key`** to register a new key."
             )
         else:
             msg = (
                 f"❌ Error fetching usage data (HTTP {status}).\n"
-                "Use **`/rese-key`** to update your key."
+                "Use **`/reset-key`** to update your key."
             )
         await interaction.followup.send(msg, ephemeral=True)
     except Exception as e:
@@ -250,12 +250,12 @@ async def usage(interaction: discord.Interaction):
         )
 
 
-# ── /rese-key ──────────────────────────────────────────────────
+# ── /reset-key ──────────────────────────────────────────────────
 @bot.tree.command(
-    name="rese-key",
+    name="reset-key",
     description="Reset your LiteLLM virtual key",
 )
-async def rese_key(interaction: discord.Interaction):
+async def reset_key(interaction: discord.Interaction):
     user_id = str(interaction.user.id)
     existing = get_user_key(user_id)
 

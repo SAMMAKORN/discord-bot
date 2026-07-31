@@ -49,16 +49,16 @@ python main.py
 
 ## Commands
 
-| Command | Description |
-|---|---|
-| `/usage` | View your LiteLLM usage stats (first time: prompts for your virtual key) |
-| `/rese-key` | Replace your registered virtual key |
+| Command      | Description                                                              |
+| ------------ | ------------------------------------------------------------------------ |
+| `/usage`     | View your LiteLLM usage stats (first time: prompts for your virtual key) |
+| `/reset-key` | Replace your registered virtual key                                      |
 
 ## How It Works
 
 1. **First run** — User types `/usage` → bot opens a modal asking for their virtual key → key is saved to SQLite (`users.db`) → usage data is fetched and displayed as a rich embed.
 2. **Subsequent runs** — `/usage` looks up the stored key and fetches usage data immediately.
-3. **`/rese-key`** — Opens a modal to replace the stored virtual key.
+3. **`/reset-key`** — Opens a modal to replace the stored virtual key.
 
 ## Connection to Discord
 
@@ -99,12 +99,12 @@ For always-online deployment, host on a VPS (Render, Railway, DigitalOcean, etc.
 2. In Coolify, add a new project and connect your repository
 3. Configure the following **environment variables** in Coolify's environment settings:
 
-| Variable | Required | Default |
-|---|---|---|
-| `BOT_TOKEN` | Yes | — |
-| `MASTER_KEY` | Yes | — |
-| `LITELLM_BASE_URL` | No | `https://litellm.sam.co.th` |
-| `DB_PATH` | No | `/data/users.db` |
+| Variable           | Required | Default                     |
+| ------------------ | -------- | --------------------------- |
+| `BOT_TOKEN`        | Yes      | —                           |
+| `MASTER_KEY`       | Yes      | —                           |
+| `LITELLM_BASE_URL` | No       | `https://litellm.sam.co.th` |
+| `DB_PATH`          | No       | `/data/users.db`            |
 
 4. Coolify will build from `Dockerfile` and deploy. Database persists on the Docker volume `bot-data`.
 
