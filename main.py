@@ -12,7 +12,7 @@ load_dotenv()
 # ── Configuration ────────────────────────────────────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 MASTER_KEY = os.getenv("MASTER_KEY", "")
-LITELLM_BASE_URL = os.getenv("LITELLM_BASE_URL", "https://litellm.sam.co.th/v1")
+LITELLM_BASE_URL = os.getenv("LITELLM_BASE_URL", "https://litellm.sam.co.th")
 DB_PATH = os.getenv("DB_PATH", "users.db")
 
 # ── Database ─────────────────────────────────────────────────────
@@ -147,17 +147,17 @@ class UsageKeyModal(discord.ui.Modal, title="🔑 First-Time Setup — Enter Vir
             if status == 401:
                 msg = (
                     "🔐 **Authentication failed.** Your virtual key may be invalid or expired.\n"
-                    "Use **`/reset-token`** to update your key."
+                    "Use **`/reset-key`** to update your key."
                 )
             elif status == 404:
                 msg = (
                     "❌ Key not found. The virtual key may have been deleted.\n"
-                    "Use **`/reset-token`** to register a new key."
+                    "Use **`/reset-key`** to register a new key."
                 )
             else:
                 msg = (
                     f"❌ Error fetching usage data (HTTP {status}).\n"
-                    "Use **`/reset-token`** to update your key."
+                    "Use **`/reset-key`** to update your key."
                 )
             await interaction.followup.send(msg, ephemeral=True)
         except Exception as e:
@@ -231,17 +231,17 @@ async def usage(interaction: discord.Interaction):
         if status == 401:
             msg = (
                 "🔐 **Authentication failed.** Your virtual key may be invalid or expired.\n"
-                "Use **`/reset-token`** to update your key."
+                "Use **`/reset-key`** to update your key."
             )
         elif status == 404:
             msg = (
                 "❌ Key not found. The virtual key may have been deleted.\n"
-                "Use **`/reset-token`** to register a new key."
+                "Use **`/reset-key`** to register a new key."
             )
         else:
             msg = (
                 f"❌ Error fetching usage data (HTTP {status}).\n"
-                "Use **`/reset-token`** to update your key."
+                "Use **`/reset-key`** to update your key."
             )
         await interaction.followup.send(msg, ephemeral=True)
     except Exception as e:
@@ -250,7 +250,7 @@ async def usage(interaction: discord.Interaction):
         )
 
 
-# ── /reset-token ─────────────────────────────────────────────────
+# ── /reset-key ─────────────────────────────────────────────────
 @bot.tree.command(
     name="reset-token",
     description="Reset your LiteLLM virtual key",

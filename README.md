@@ -35,7 +35,7 @@ cp .env.example .env
 ```env
 BOT_TOKEN=your_discord_bot_token
 MASTER_KEY=your_litellm_master_key
-LITELLM_BASE_URL=https://litellm.sam.co.th/v1
+LITELLM_BASE_URL=https://litellm.sam.co.th
 DB_PATH=users.db
 ```
 
@@ -103,7 +103,7 @@ For always-online deployment, host on a VPS (Render, Railway, DigitalOcean, etc.
 |---|---|---|
 | `BOT_TOKEN` | Yes | — |
 | `MASTER_KEY` | Yes | — |
-| `LITELLM_BASE_URL` | No | `https://litellm.sam.co.th/v1` |
+| `LITELLM_BASE_URL` | No | `https://litellm.sam.co.th` |
 | `DB_PATH` | No | `/data/users.db` |
 
 4. Coolify will build from `Dockerfile` and deploy. Database persists on the Docker volume `bot-data`.
