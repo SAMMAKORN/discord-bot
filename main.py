@@ -7,6 +7,7 @@ import discord
 from discord.ext.commands import Bot as CommandsBot
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+from pathlib import Path
 
 load_dotenv()
 
@@ -14,11 +15,17 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 MASTER_KEY = os.getenv("MASTER_KEY", "")
 LITELLM_BASE_URL = os.getenv("LITELLM_BASE_URL", "https://litellm.sam.co.th")
-DB_PATH = os.getenv("DB_PATH", "users.db")
+DB_PATH = os.getenv("DB_PATH", "/app/data/bot.db")
 
 # ── Database ─────────────────────────────────────────────────────
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    db_path = Path(DB_PATH)
+
+    # SQLite สร้างไฟล์ฐานข้อมูลได้
+    # แต่จะไม่สร้างโฟลเดอร์แม่ให้
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     return conn
 

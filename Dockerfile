@@ -12,12 +12,12 @@ COPY main.py .
 # Create non-root user for security
 RUN addgroup --system bot && adduser --system --ingroup bot botuser
 
-# Database volume
-RUN mkdir -p /data && chown botuser:bot /data
+# Database volume (mounted at /app/data)
+RUN mkdir -p /app/data && chown botuser:bot /app/data
 
 USER botuser
 
-# Database path points to volume
-ENV DB_PATH=/data/users.db
+# Default database path for Docker
+ENV DB_PATH=/app/data/bot.db
 
 CMD ["python", "main.py"]
