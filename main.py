@@ -6,6 +6,7 @@ import aiohttp
 import discord
 from discord.ext.commands import Bot as CommandsBot
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 load_dotenv()
 
@@ -133,14 +134,9 @@ def format_usage_embed(data: dict, usd_thb_rate: float = 0.0) -> discord.Embed:
     if last_active:
         try:
             la_dt = datetime.fromisoformat(str(last_active).replace("Z", "+00:00"))
-            elapsed = datetime.now(timezone.utc) - la_dt
-            days = elapsed.days
-            if days == 0:
-                la_str = f"{last_active} (just now)"
-            elif days < 30:
-                la_str = f"{last_active} ({days}d ago)"
-            else:
-                la_str = f"{last_active} ({days}d ago)"
+            la_bkk = la_dt.astimezone(ZoneInfo("Asia/Bangkok"))
+            hour = la_bkk.strftime("%I").lstrip("0") or "12"
+            la_str = f"{la_bkk:%b %d, %Y} at {hour}:{la_bkk:%M} {la_bkk:%p}"
         except Exception:
             la_str = str(last_active)
         embed.add_field(name="🕐 Last Active", value=la_str, inline=True)
