@@ -74,11 +74,22 @@ async def fetch_usage(virtual_key: str) -> dict:
             return await resp.json()
 
 
+async def fetch_usd_thb_rate() -> float:
+    """Fetch live USD/THB exchange rate from exchangerate API (no API key needed)."""
+    url = "https://open.er-api.com/v6/latest/USD"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            rate = data.get("rates", {}).get("THB", 0.0)
+            return float(rate) if rate else 0.0
+
+
 def _truncate_key(key: str) -> str:
     return f"****{key[-8:]}" if len(key) > 8 else key
 
 
-def format_usage_embed(data: dict) -> discord.Embed:
+def format_usage_embed(data: dict, usd_thb_rate: float = 0.0) -> discord.Embed:
     key = data.get("key", "N/A")
     info = data.get("info", {})
 
@@ -90,6 +101,12 @@ def format_usage_embed(data: dict) -> discord.Embed:
     max_budget = info.get("max_budget", None)
     key_name = info.get("key_name", "N/A")
 
+    if usd_thb_rate and spend:
+        thb = spend * usd_thb_rate
+        spend_str = f"${spend:,.2f} USD\n฿{thb:,.2f} THB (1 USD = {usd_thb_rate:,.2f} THB)"
+    else:
+        spend_str = f"${spend:,.2f} USD"
+
     embed = discord.Embed(
         title="📊 LiteLLM Usage Report",
         color=discord.Color.blurple(),
@@ -97,7 +114,7 @@ def format_usage_embed(data: dict) -> discord.Embed:
     )
     embed.set_author(name=key_name)
     embed.add_field(name="🔑 Virtual Key", value=f"```{_truncate_key(key)}```", inline=True)
-    embed.add_field(name="💰 Total Spend", value=f"${spend:,.2f} USD", inline=True)
+    embed.add_field(name="💰 Total Spend", value=spend_str, inline=False)
     embed.add_field(name="📅 Expires", value=str(expires), inline=True)
 
     if max_budget is not None:
@@ -139,7 +156,8 @@ class UsageKeyModal(discord.ui.Modal, title="🔑 First-Time Setup — Enter Vir
 
         try:
             data = await fetch_usage(virtual_key)
-            embed = format_usage_embed(data)
+            rate = await fetch_usd_thb_rate()
+            embed = format_usage_embed(data, rate)
             embed.set_footer(text=f"Requested by {interaction.user}")
             await interaction.followup.send(embed=embed, ephemeral=True)
         except aiohttp.ClientResponseError as e:
@@ -223,7 +241,8 @@ async def usage(interaction: discord.Interaction):
 
     try:
         data = await fetch_usage(virtual_key)
-        embed = format_usage_embed(data)
+        rate = await fetch_usd_thb_rate()
+        embed = format_usage_embed(data, rate)
         embed.set_footer(text=f"Requested by {interaction.user}")
         await interaction.followup.send(embed=embed, ephemeral=True)
     except aiohttp.ClientResponseError as e:
