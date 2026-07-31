@@ -1,0 +1,15 @@
+services:
+  discord-bot:
+    build: .
+    container_name: discord-bot
+    restart: unless-stopped
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - MASTER_KEY=${MASTER_KEY}
+      - LITELLM_BASE_URL=${LITELLM_BASE_URL:-https://litellm.sam.co.th/v1}
+      - DB_PATH=${DB_PATH:-/data/users.db}
+    volumes:
+      - bot-data:/data
+
+volumes:
+  bot-data:

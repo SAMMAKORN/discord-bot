@@ -81,9 +81,37 @@ For always-online deployment, host on a VPS (Render, Railway, DigitalOcean, etc.
 ```
 ├── main.py            # Bot source code
 ├── requirements.txt   # Python dependencies
+├── Dockerfile         # Docker build
+├── docker-compose.yml # Local / Coolify compose
+├── .dockerignore
 ├── .env               # Secrets (git-ignored)
 ├── .env.example       # Template for .env
 ├── .gitignore
 ├── users.db           # SQLite database (auto-created, git-ignored)
 └── README.md
+```
+
+## Deployment
+
+### Docker (Coolify)
+
+1. Push this repo to a Git provider (GitHub, GitLab, etc.)
+2. In Coolify, add a new project and connect your repository
+3. Configure the following **environment variables** in Coolify's environment settings:
+
+| Variable | Required | Default |
+|---|---|---|
+| `BOT_TOKEN` | Yes | — |
+| `MASTER_KEY` | Yes | — |
+| `LITELLM_BASE_URL` | No | `https://litellm.sam.co.th/v1` |
+| `DB_PATH` | No | `/data/users.db` |
+
+4. Coolify will build from `Dockerfile` and deploy. Database persists on the Docker volume `bot-data`.
+
+### Local Docker
+
+```bash
+cp .env.example .env
+# Fill in .env with your tokens
+docker compose up --build -d
 ```

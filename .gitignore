@@ -9,6 +9,9 @@ users.db
 # Environment
 .env
 
+# Docker build artifacts (keep Dockerfile and compose for Coolify)
+docker-compose.override.yml
+
 # IDE
 .vscode/
 .idea/
