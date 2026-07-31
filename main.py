@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 import sqlite3
 import aiohttp
 import discord
+from discord.ext.commands import Bot as CommandsBot
 from datetime import datetime, timezone
 
 load_dotenv()
@@ -184,7 +185,7 @@ class ResetKeyModal(discord.ui.Modal, title="🔑 Reset Virtual Key"):
 
 
 # ── Bot ──────────────────────────────────────────────────────────
-class Bot(discord.Bot):
+class LiteLLMBot(CommandsBot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
@@ -200,7 +201,7 @@ class Bot(discord.Bot):
         print(f"✅ Logged in as {self.user} (ID: {self.user.id})")
 
 
-bot = Bot()
+bot = LiteLLMBot()
 
 
 # ── /usage ───────────────────────────────────────────────────────
