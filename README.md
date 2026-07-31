@@ -1,6 +1,6 @@
 # LiteLLM Usage Discord Bot
 
-A Discord bot for checking LiteLLM proxy usage via the `/usage` slash command. Users register their virtual key on first use, and the bot queries the LiteLLM proxy API to display spend, models, expiry, and more.
+A Discord bot for checking LiteLLM proxy usage via the `/usage` slash command. Users register their virtual key on first use, and the bot queries the LiteLLM proxy API to display spend (in USD & THB), models, rate limits, expiry, and more — all as ephemeral ("Only you can see this message") responses.
 
 ## Requirements
 
@@ -49,10 +49,28 @@ python main.py
 
 ## Commands
 
+All responses are **ephemeral** (only visible to the user who invoked the command).
+
 | Command      | Description                                                              |
 | ------------ | ------------------------------------------------------------------------ |
 | `/usage`     | View your LiteLLM usage stats (first time: prompts for your virtual key) |
 | `/reset-key` | Replace your registered virtual key                                      |
+
+## Embed Fields
+
+The `/usage` command displays a rich embed with the following fields:
+
+| Field            | Description                                                                 |
+| ---------------- | --------------------------------------------------------------------------- |
+| **🔑 Virtual Key** | Truncated virtual key (last 8 chars)                                     |
+| **🏷️ Key Alias**  | Key alias (if set in LiteLLM proxy)                                       |
+| **💰 Total Spend** | Spend in USD + converted THB (live exchange rate from [exchangerate API](https://www.exchangerate-api.com)) |
+| **📅 Expires**     | Key expiration date                                                       |
+| **🕐 Last Active** | Last API call time (converted to Asia/Bangkok timezone)                   |
+| **⚡ Rate Limits**  | RPM, TPM, and max parallel requests limits                                |
+| **💵 Max Budget**   | Per-key budget cap (if configured)                                        |
+| **🤖 Models**      | Allowed models (or "All models")                                          |
+| **⚙️ Config**      | Additional key configuration (if any)                                     |
 
 ## How It Works
 
