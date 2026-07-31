@@ -52,7 +52,7 @@ python main.py
 | Command | Description |
 |---|---|
 | `/usage` | View your LiteLLM usage stats (first time: prompts for your virtual key) |
-| `/reset-token` | Replace your registered virtual key |
+| `/rese-key` | Replace your registered virtual key |
 
 ## How It Works
 

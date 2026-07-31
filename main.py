@@ -134,30 +134,30 @@ class UsageKeyModal(discord.ui.Modal, title="🔑 First-Time Setup — Enter Vir
         save_user_key(user_id, virtual_key)
 
         await interaction.response.send_message(
-            "✅ Virtual key saved! Fetching usage data ...", ephemeral=False
+            "✅ Virtual key saved! Fetching usage data ...", ephemeral=True
         )
 
         try:
             data = await fetch_usage(virtual_key)
             embed = format_usage_embed(data)
             embed.set_footer(text=f"Requested by {interaction.user}")
-            await interaction.followup.send(embed=embed)
+            await interaction.followup.send(embed=embed, ephemeral=True)
         except aiohttp.ClientResponseError as e:
             status = e.status
             if status == 401:
                 msg = (
                     "🔐 **Authentication failed.** Your virtual key may be invalid or expired.\n"
-                    "Use **`/reset-key`** to update your key."
+                    "Use **`/rese-key`** to update your key."
                 )
             elif status == 404:
                 msg = (
                     "❌ Key not found. The virtual key may have been deleted.\n"
-                    "Use **`/reset-key`** to register a new key."
+                    "Use **`/rese-key`** to register a new key."
                 )
             else:
                 msg = (
                     f"❌ Error fetching usage data (HTTP {status}).\n"
-                    "Use **`/reset-key`** to update your key."
+                    "Use **`/rese-key`** to update your key."
                 )
             await interaction.followup.send(msg, ephemeral=True)
         except Exception as e:
@@ -219,29 +219,29 @@ async def usage(interaction: discord.Interaction):
         return
 
     # Known user — defer and fetch.
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
 
     try:
         data = await fetch_usage(virtual_key)
         embed = format_usage_embed(data)
         embed.set_footer(text=f"Requested by {interaction.user}")
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, ephemeral=True)
     except aiohttp.ClientResponseError as e:
         status = e.status
         if status == 401:
             msg = (
                 "🔐 **Authentication failed.** Your virtual key may be invalid or expired.\n"
-                "Use **`/reset-key`** to update your key."
+                "Use **`/rese-key`** to update your key."
             )
         elif status == 404:
             msg = (
                 "❌ Key not found. The virtual key may have been deleted.\n"
-                "Use **`/reset-key`** to register a new key."
+                "Use **`/rese-key`** to register a new key."
             )
         else:
             msg = (
                 f"❌ Error fetching usage data (HTTP {status}).\n"
-                "Use **`/reset-key`** to update your key."
+                "Use **`/rese-key`** to update your key."
             )
         await interaction.followup.send(msg, ephemeral=True)
     except Exception as e:
@@ -250,12 +250,12 @@ async def usage(interaction: discord.Interaction):
         )
 
 
-# ── /reset-key ─────────────────────────────────────────────────
+# ── /rese-key ──────────────────────────────────────────────────
 @bot.tree.command(
-    name="reset-token",
+    name="rese-key",
     description="Reset your LiteLLM virtual key",
 )
-async def reset_token(interaction: discord.Interaction):
+async def rese_key(interaction: discord.Interaction):
     user_id = str(interaction.user.id)
     existing = get_user_key(user_id)
 
