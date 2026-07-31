@@ -97,7 +97,7 @@ def format_usage_embed(data: dict) -> discord.Embed:
     )
     embed.set_author(name=key_name)
     embed.add_field(name="🔑 Virtual Key", value=f"```{_truncate_key(key)}```", inline=True)
-    embed.add_field(name="💰 Total Spend", value=f"${spend:,.6f} USD", inline=True)
+    embed.add_field(name="💰 Total Spend", value=f"${spend:,.2f} USD", inline=True)
     embed.add_field(name="📅 Expires", value=str(expires), inline=True)
 
     if max_budget is not None:
