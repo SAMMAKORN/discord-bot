@@ -1,18 +1,18 @@
 import os
 
-import dotenv
+from dotenv import load_dotenv
 import sqlite3
 import aiohttp
 import discord
 from datetime import datetime, timezone
 
-dotenv.load_dotenv()
+load_dotenv()
 
 # ── Configuration ────────────────────────────────────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 MASTER_KEY = os.getenv("MASTER_KEY", "")
-LITELLM_BASE_URL = "https://litellm.sam.co.th/v1"
-DB_PATH = "users.db"
+LITELLM_BASE_URL = os.getenv("LITELLM_BASE_URL", "https://litellm.sam.co.th/v1")
+DB_PATH = os.getenv("DB_PATH", "users.db")
 
 # ── Database ─────────────────────────────────────────────────────
 def get_db():

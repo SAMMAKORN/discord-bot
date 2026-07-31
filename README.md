@@ -26,14 +26,20 @@ pip install -r requirements.txt
 
 ### 3. Configure Environment Variables
 
-Store your tokens in a `.env` file (never commit this to git):
+Copy `.env.example` to `.env` and fill in your tokens:
 
-```env
-BOT_TOKEN=YOUR_DISCORD_BOT_TOKEN
-MASTER_KEY=YOUR_LITELLM_MASTER_KEY
+```bash
+cp .env.example .env
 ```
 
-Alternatively, edit lines 6–7 in [main.py](main.py) directly.
+```env
+BOT_TOKEN=your_discord_bot_token
+MASTER_KEY=your_litellm_master_key
+LITELLM_BASE_URL=https://litellm.sam.co.th/v1
+DB_PATH=users.db
+```
+
+> ⚠️ `.env` is git-ignored — never commit it.
 
 ### 4. Run the Bot
 
@@ -76,7 +82,8 @@ For always-online deployment, host on a VPS (Render, Railway, DigitalOcean, etc.
 ├── main.py            # Bot source code
 ├── requirements.txt   # Python dependencies
 ├── .env               # Secrets (git-ignored)
+├── .env.example       # Template for .env
 ├── .gitignore
-├── users.db           # SQLite database (auto-created)
+├── users.db           # SQLite database (auto-created, git-ignored)
 └── README.md
 ```
