@@ -58,7 +58,7 @@ python main.py
 
 1. **First run** — User types `/usage` → bot opens a modal asking for their virtual key → key is saved to SQLite (`users.db`) → usage data is fetched and displayed as a rich embed.
 2. **Subsequent runs** — `/usage` looks up the stored key and fetches usage data immediately.
-3. **`/reset-token`** — Opens a modal to replace the stored virtual key.
+3. **`/rese-key`** — Opens a modal to replace the stored virtual key.
 
 ## Connection to Discord
 
