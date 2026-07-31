@@ -100,6 +100,13 @@ def format_usage_embed(data: dict, usd_thb_rate: float = 0.0) -> discord.Embed:
     config = info.get("config", {})
     max_budget = info.get("max_budget", None)
     key_name = info.get("key_name", "N/A")
+    key_alias = info.get("key_alias", data.get("key_alias", None))
+    last_active = info.get("last_active", None)
+
+    # Rate limits
+    rpm_limit = info.get("rpm_requests", None)
+    tpm_limit = info.get("tpm_limit", None)
+    max_parallel_requests = info.get("max_parallel_requests", None)
 
     if usd_thb_rate and spend:
         thb = spend * usd_thb_rate
@@ -114,18 +121,46 @@ def format_usage_embed(data: dict, usd_thb_rate: float = 0.0) -> discord.Embed:
     )
     embed.set_author(name=key_name)
     embed.add_field(name="🔑 Virtual Key", value=f"```{_truncate_key(key)}```", inline=True)
+
+    # Key Alias
+    if key_alias:
+        embed.add_field(name="🏷️ Key Alias", value=key_alias, inline=True)
+
     embed.add_field(name="💰 Total Spend", value=spend_str, inline=False)
     embed.add_field(name="📅 Expires", value=str(expires), inline=True)
+
+    # Last Active
+    if last_active:
+        try:
+            la_dt = datetime.fromisoformat(str(last_active).replace("Z", "+00:00"))
+            elapsed = datetime.now(timezone.utc) - la_dt
+            days = elapsed.days
+            if days == 0:
+                la_str = f"{last_active} (just now)"
+            elif days < 30:
+                la_str = f"{last_active} ({days}d ago)"
+            else:
+                la_str = f"{last_active} ({days}d ago)"
+        except Exception:
+            la_str = str(last_active)
+        embed.add_field(name="🕐 Last Active", value=la_str, inline=True)
+
+    # Rate Limits
+    rate_parts = []
+    if rpm_limit is not None:
+        rate_parts.append(f"{rpm_limit:,} req/min")
+    if tpm_limit is not None:
+        rate_parts.append(f"{tpm_limit:,} tok/min")
+    if max_parallel_requests is not None:
+        rate_parts.append(f"{max_parallel_requests:,} parallel")
+    if rate_parts:
+        embed.add_field(name="⚡ Rate Limits", value=", ".join(rate_parts), inline=True)
 
     if max_budget is not None:
         embed.add_field(name="💵 Max Budget", value=f"${max_budget:,.2f}", inline=True)
 
     models_str = ", ".join(models) if models else "All models"
     embed.add_field(name="🤖 Models", value=models_str, inline=True)
-
-    if aliases:
-        alias_str = "\n".join(f"{k} → {v}" for k, v in aliases.items())
-        embed.add_field(name="🏷️ Aliases", value=f"```{alias_str}```", inline=False)
 
     if config:
         config_str = "\n".join(f"{k}: {v}" for k, v in config.items())
