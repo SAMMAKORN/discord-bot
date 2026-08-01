@@ -14,7 +14,5 @@ services:
       DB_PATH: ${DB_PATH:-/app/data/bot.db}
 
     volumes:
-      - discord-bot-data:/app/data
+      - ${COOLIFY_APP_DIR:-.}/data:/app/data
 
-volumes:
-  discord-bot-data:

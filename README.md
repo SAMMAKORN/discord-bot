@@ -127,7 +127,9 @@ For always-online deployment, host on a VPS (Render, Railway, DigitalOcean, etc.
 ├── .env.example       # Template for .env
 ├── .gitignore
 ├── CHANGELOG.md       # Version history
-├── bot.db             # SQLite database (auto-created, git-ignored)
+├── data/              # Persisted database directory (bind mount)
+│   └── bot.db         # SQLite database (auto-created)
+├── bot.db             # SQLite database (local dev, git-ignored)
 └── README.md
 ```
 
@@ -146,7 +148,10 @@ For always-online deployment, host on a VPS (Render, Railway, DigitalOcean, etc.
 | `LITELLM_BASE_URL` | No       | `https://litellm.sam.co.th` |
 | `DB_PATH`          | No       | `/app/data/bot.db`          |
 
-4. Coolify will build from `Dockerfile` and deploy. Database persists on the Docker volume `bot-data`.
+4. Coolify will build from `Dockerfile` and deploy.
+5. Database persists via a **bind mount** at `./data/` on the host — data survives redeployments automatically.
+
+> **Note:** If migrating from a previous named volume setup, copy any existing `bot.db` file to the `data/` directory before the first deploy.
 
 ### Local Docker
 

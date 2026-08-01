@@ -5,6 +5,8 @@ __pycache__/
 
 # Database
 users.db
+bot.db
+data/
 
 # Environment
 .env
