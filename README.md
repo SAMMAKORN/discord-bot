@@ -1,10 +1,10 @@
 # LiteLLM Usage Discord Bot
 
-A Discord bot for checking LiteLLM proxy usage via the `/usage` slash command. Users register their virtual key on first use, and the bot queries the LiteLLM proxy API to display spend (in USD & THB), models, rate limits, expiry, and more — all as ephemeral ("Only you can see this message") responses.
+A Discord bot for checking LiteLLM proxy usage and browsing available models via slash commands. Users register their virtual key on first use, and the bot queries the LiteLLM proxy API to display spend (in USD & THB), models, rate limits, expiry, and more — all as ephemeral ("Only you can see this message") responses.
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.12+
 - A Discord Bot Token
 - A LiteLLM Proxy Master Key
 
@@ -51,10 +51,30 @@ python main.py
 
 All responses are **ephemeral** (only visible to the user who invoked the command).
 
-| Command      | Description                                                              |
-| ------------ | ------------------------------------------------------------------------ |
-| `/usage`     | View your LiteLLM usage stats (first time: prompts for your virtual key) |
-| `/reset-key` | Replace your registered virtual key                                      |
+| Command        | Description                                                              |
+| -------------- | ------------------------------------------------------------------------ |
+| `/help`        | Show all available commands with interactive buttons                     |
+| `/usage`       | View your LiteLLM usage stats (first time: prompts for your virtual key) |
+| `/models`      | List all models you have access to (first time: prompts for your virtual key) |
+| `/reset-key`   | Replace your registered virtual key                                      |
+| `/delete-key`  | Delete your virtual key and all data from the bot                        |
+
+## `/help` Command
+
+The `/help` command displays an embed listing all available commands, along with **interactive buttons** that let you trigger each command directly without typing:
+
+| Button           | Action                                                     |
+| ---------------- | ---------------------------------------------------------- |
+| **📊 Usage Stats**   | Runs `/usage` to check your LiteLLM usage statistics       |
+| **🤖 Models**        | Runs `/models` to list all accessible AI models            |
+| **🔑 Reset Key**     | Opens a modal to reset/update your virtual key             |
+| **🗑️ Delete Key**    | Deletes your registered virtual key and data from the bot  |
+
+> The buttons remain interactive for 120 seconds after the `/help` response is sent.
+
+## `/models` Command
+
+The `/models` command displays the models accessible with your virtual key, grouped by provider (e.g., `openai`, `anthropic`, `google`). If the list is too long for a single embed, it shows a summary with model counts per provider.
 
 ## Embed Fields
 
@@ -62,21 +82,22 @@ The `/usage` command displays a rich embed with the following fields:
 
 | Field            | Description                                                                 |
 | ---------------- | --------------------------------------------------------------------------- |
-| **🔑 Virtual Key** | Truncated virtual key (last 8 chars)                                     |
-| **🏷️ Key Alias**  | Key alias (if set in LiteLLM proxy)                                       |
-| **💰 Total Spend** | Spend in USD + converted THB (live exchange rate from [exchangerate API](https://www.exchangerate-api.com)) |
-| **📅 Expires**     | Key expiration date                                                       |
-| **🕐 Last Active** | Last API call time (converted to Asia/Bangkok timezone)                   |
-| **⚡ Rate Limits**  | RPM, TPM, and max parallel requests limits                                |
-| **💵 Max Budget**   | Per-key budget cap (if configured)                                        |
-| **🤖 Models**      | Allowed models (or "All models")                                          |
-| **⚙️ Config**      | Additional key configuration (if any)                                     |
+| **🔑 Virtual Key**   | Truncated virtual key (last 8 chars)                                       |
+| **🏷️ Key Alias**    | Key alias (if set in LiteLLM proxy)                                        |
+| **💰 Total Spend**   | Spend in USD + converted THB (live exchange rate from [exchangerate API](https://www.exchangerate-api.com)) |
+| **📅 Expires**       | Key expiration date                                                        |
+| **🕐 Last Active**   | Last API call time (converted to Asia/Bangkok timezone)                    |
+| **⚡ Rate Limits**    | RPM, TPM, and max parallel requests limits                                 |
+| **💵 Max Budget**    | Per-key budget cap (if configured)                                         |
+| **🤖 Models**        | Allowed models (or "All models")                                           |
+| **⚙️ Config**        | Additional key configuration (if any)                                      |
 
 ## How It Works
 
-1. **First run** — User types `/usage` → bot opens a modal asking for their virtual key → key is saved to SQLite (`users.db`) → usage data is fetched and displayed as a rich embed.
-2. **Subsequent runs** — `/usage` looks up the stored key and fetches usage data immediately.
+1. **First run** — User types `/usage` or `/models` → bot opens a modal asking for their virtual key → key is saved to SQLite (`bot.db`) → data is fetched and displayed as a rich embed.
+2. **Subsequent runs** — `/usage` or `/models` looks up the stored key and fetches data immediately.
 3. **`/reset-key`** — Opens a modal to replace the stored virtual key.
+4. **`/delete-key`** — Permanently deletes the user's virtual key and all associated data from the bot's database.
 
 ## Connection to Discord
 
@@ -105,7 +126,8 @@ For always-online deployment, host on a VPS (Render, Railway, DigitalOcean, etc.
 ├── .env               # Secrets (git-ignored)
 ├── .env.example       # Template for .env
 ├── .gitignore
-├── users.db           # SQLite database (auto-created, git-ignored)
+├── CHANGELOG.md       # Version history
+├── bot.db             # SQLite database (auto-created, git-ignored)
 └── README.md
 ```
 
@@ -122,7 +144,7 @@ For always-online deployment, host on a VPS (Render, Railway, DigitalOcean, etc.
 | `BOT_TOKEN`        | Yes      | —                           |
 | `MASTER_KEY`       | Yes      | —                           |
 | `LITELLM_BASE_URL` | No       | `https://litellm.sam.co.th` |
-| `DB_PATH`          | No       | `/data/users.db`            |
+| `DB_PATH`          | No       | `/app/data/bot.db`          |
 
 4. Coolify will build from `Dockerfile` and deploy. Database persists on the Docker volume `bot-data`.
 
@@ -133,3 +155,15 @@ cp .env.example .env
 # Fill in .env with your tokens
 docker compose up --build -d
 ```
+
+## Tech Stack
+
+| Component       | Technology                                    |
+| --------------- | --------------------------------------------- |
+| Runtime         | Python 3.12+                                  |
+| Discord Library | discord.py 2.x                                |
+| HTTP Client     | aiohttp (async HTTP requests)                 |
+| Database        | SQLite (per-user virtual key storage)         |
+| Config          | python-dotenv (environment variable loading)  |
+| Timezone        | tzdata (Asia/Bangkok timezone support)        |
+| Containerization| Docker + Docker Compose                       |
