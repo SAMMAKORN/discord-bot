@@ -21,6 +21,9 @@ RUN printf '#!/bin/sh\nset -e\nDATA_DIR="$(dirname "${DB_PATH}")"\nmkdir -p "$DA
 RUN addgroup --system bot && adduser --system --ingroup bot botuser \
     && mkdir -p /app/data && chown -R botuser:bot /app/data
 
+# Declare volume point for SQLite database persistence
+VOLUME ["/app/data"]
+
 # Run entrypoint as root (to fix volume permissions) then drop to botuser
 USER root
 ENTRYPOINT ["/docker-entrypoint.sh"]
