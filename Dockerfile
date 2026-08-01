@@ -9,16 +9,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application
 COPY main.py .
 
-# Default database path for Docker
-ENV DB_PATH=/app/data/bot.db
+# Database path is fixed to /app/data/bot.db — do NOT make it configurable via ENV
+# Changing the path causes data loss on deploy (file written outside named volume)
 
 # Healthcheck: verify bot process is running and DB is initialized
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
-    CMD pgrep -x python > /dev/null && test -f "${DB_PATH}" || exit 1
+    CMD pgrep -x python > /dev/null && test -f /app/data/bot.db || exit 1
 
 # Entrypoint fixes volume mount permissions before running as botuser
 # แก้ chown botuser:bot เป็น chown -R botuser:bot
-RUN printf '#!/bin/sh\nset -e\nDATA_DIR="$(dirname "${DB_PATH}")"\nmkdir -p "$DATA_DIR"\nchown -R botuser:bot "$DATA_DIR" 2>/dev/null || true\nchmod 755 "$DATA_DIR" 2>/dev/null || true\nexec su botuser -s /bin/sh -c "cd /app && python main.py"\n' > /docker-entrypoint.sh \
+RUN printf '#!/bin/sh\nset -e\nmkdir -p /app/data\nchown -R botuser:bot /app/data 2>/dev/null || true\nchmod 755 /app/data 2>/dev/null || true\nexec su botuser -s /bin/sh -c "cd /app && python main.py"\n' > /docker-entrypoint.sh \
     && chmod +x /docker-entrypoint.sh
 
 # Create non-root user
