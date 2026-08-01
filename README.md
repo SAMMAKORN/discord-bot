@@ -36,6 +36,7 @@ cp .env.example .env
 BOT_TOKEN=your_discord_bot_token
 MASTER_KEY=your_litellm_master_key
 LITELLM_BASE_URL=https://litellm.sam.co.th
+# Local dev only — Docker/Coolify uses /app/data/bot.db via named volume
 DB_PATH=users.db
 ```
 
@@ -120,16 +121,14 @@ For always-online deployment, host on a VPS (Render, Railway, DigitalOcean, etc.
 ```
 ├── main.py            # Bot source code
 ├── requirements.txt   # Python dependencies
-├── Dockerfile         # Docker build
-├── docker-compose.yml # Local / Coolify compose
+├── Dockerfile         # Docker build (includes HEALTHCHECK)
+├── docker-compose.yml # Local / Coolify compose (named volume: discord-bot-data)
 ├── .dockerignore
 ├── .env               # Secrets (git-ignored)
 ├── .env.example       # Template for .env
 ├── .gitignore
 ├── CHANGELOG.md       # Version history
-├── data/              # Persisted database directory (bind mount)
-│   └── bot.db         # SQLite database (auto-created)
-├── bot.db             # SQLite database (local dev, git-ignored)
+├── bot.db             # SQLite database (local dev only, git-ignored)
 └── README.md
 ```
 
@@ -138,7 +137,7 @@ For always-online deployment, host on a VPS (Render, Railway, DigitalOcean, etc.
 ### Docker (Coolify)
 
 1. Push this repo to a Git provider (GitHub, GitLab, etc.)
-2. In Coolify, add a new project and connect your repository
+2. In Coolify, set **Build Pack** to **Docker Compose** and point to `docker-compose.yml`
 3. Configure the following **environment variables** in Coolify's environment settings:
 
 | Variable           | Required | Default                     |
@@ -148,16 +147,29 @@ For always-online deployment, host on a VPS (Render, Railway, DigitalOcean, etc.
 | `LITELLM_BASE_URL` | No       | `https://litellm.sam.co.th` |
 | `DB_PATH`          | No       | `/app/data/bot.db`          |
 
-4. Coolify will build from `Dockerfile` and deploy.
-5. Database persists via a **bind mount** at `./data/` on the host — data survives redeployments automatically.
+4. Coolify will build and deploy the bot. Database is persisted via a **named Docker volume** (`discord-bot-data` → `/app/data`) and survives redeployments automatically.
 
-> **Note:** If migrating from a previous named volume setup, copy any existing `bot.db` file to the `data/` directory before the first deploy.
+> **⚠️ Important:** Do **not** set `DB_PATH` to a bare filename (e.g. `users.db`). Always use `/app/data/bot.db` so the file is written inside the persistent volume.
+
+### Healthcheck
+
+The Dockerfile includes a built-in healthcheck:
+
+```
+Interval: 60s | Timeout: 10s | Start period: 30s | Retries: 3
+```
+
+The check verifies:
+1. The `python` process is running
+2. The database file (`$DB_PATH`) exists — confirming the bot has initialized successfully
+
+If the container becomes **unhealthy**, Coolify/Docker will automatically restart it.
 
 ### Local Docker
 
 ```bash
 cp .env.example .env
-# Fill in .env with your tokens
+# Fill in .env with your tokens (use DB_PATH=users.db for local dev)
 docker compose up --build -d
 ```
 
