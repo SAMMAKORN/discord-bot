@@ -12,9 +12,9 @@ COPY main.py .
 # Default database path for Docker
 ENV DB_PATH=/app/data/bot.db
 
-# Healthcheck: verify bot process is running
+# Healthcheck: verify bot process is running and DB is initialized
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
-    CMD pgrep -f "python main.py" > /dev/null || exit 1
+    CMD pgrep -x python > /dev/null && test -f "${DB_PATH}" || exit 1
 
 # Entrypoint fixes volume mount permissions before running as botuser
 # แก้ chown botuser:bot เป็น chown -R botuser:bot
