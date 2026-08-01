@@ -69,6 +69,17 @@ def save_user_key(user_id: str, virtual_key: str):
     conn.close()
 
 
+def delete_user_key(user_id: str) -> bool:
+    conn = get_db()
+    cursor = conn.execute(
+        "DELETE FROM users WHERE user_id = ?", (user_id,)
+    )
+    conn.commit()
+    deleted = cursor.rowcount > 0
+    conn.close()
+    return deleted
+
+
 # ── LiteLLM API ──────────────────────────────────────────────────
 async def fetch_usage(virtual_key: str) -> dict:
     url = f"{LITELLM_BASE_URL}/key/info"
@@ -77,6 +88,17 @@ async def fetch_usage(virtual_key: str) -> dict:
             url,
             params={"key": virtual_key},
             headers={"Authorization": f"Bearer {MASTER_KEY}"},
+        ) as resp:
+            resp.raise_for_status()
+            return await resp.json()
+
+
+async def fetch_models(virtual_key: str) -> dict:
+    url = f"{LITELLM_BASE_URL}/v1/models"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            url,
+            headers={"Authorization": f"Bearer {virtual_key}"},
         ) as resp:
             resp.raise_for_status()
             return await resp.json()
@@ -172,6 +194,229 @@ def format_usage_embed(data: dict, usd_thb_rate: float = 0.0) -> discord.Embed:
     return embed
 
 
+def format_models_embed(data: dict) -> discord.Embed:
+    models = data.get("data", [])
+    embed = discord.Embed(
+        title="🤖 Available Models",
+        description=f"Found **{len(models)}** model(s) you have access to.",
+        color=discord.Color.green(),
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    # Group models by provider prefix
+    provider_groups = {}
+    ungrouped = []
+    for m in models:
+        id_ = m.get("id", "unknown")
+        # Extract provider prefix (e.g., "openai/gpt-4" → "openai")
+        if "/" in id_:
+            provider = id_.split("/")[0]
+        else:
+            provider = None
+
+        if provider:
+            provider_groups.setdefault(provider, [])
+            provider_groups[provider].append(id_)
+        else:
+            ungrouped.append(id_)
+
+    # Build description by provider
+    chunks = []
+    for provider, model_ids in sorted(provider_groups.items()):
+        models_text = "\n".join(f"• `{m}`" for m in sorted(model_ids))
+        chunks.append(f"**{provider}** ({len(model_ids)})\n{models_text}")
+
+    if ungrouped:
+        models_text = "\n".join(f"• `{m}`" for m in sorted(ungrouped))
+        chunks.append(f"**Other** ({len(ungrouped)})\n{models_text}")
+
+    # Discord embed description limit is 1024 chars; split if needed
+    full_text = "\n\n".join(chunks)
+    if len(full_text) > 1000:
+        # Fallback: show count only with top providers
+        summary_parts = []
+        for provider, model_ids in sorted(provider_groups.items()):
+            summary_parts.append(f"{provider}: {len(model_ids)}")
+        if ungrouped:
+            summary_parts.append(f"other: {len(ungrouped)}")
+        summary = ", ".join(summary_parts[:10])
+        if len(summary_parts) > 10:
+            summary += " ..."
+        full_text = f"⚠️ Too many models to display.\n{summary}"
+
+    embed.add_field(name="Models", value=full_text, inline=False)
+    return embed
+
+
+# ── Command handlers (shared by slash commands and buttons) ──────
+async def handle_usage(interaction: discord.Interaction):
+    """Core logic for /usage — callable from slash command or button."""
+    user_id = str(interaction.user.id)
+    virtual_key = get_user_key(user_id)
+
+    if virtual_key is None:
+        if interaction.response.is_done():
+            await interaction.followup.send_modal(UsageKeyModal())
+        else:
+            await interaction.response.send_modal(UsageKeyModal())
+        return
+
+    if not interaction.response.is_done():
+        await interaction.response.defer(ephemeral=True)
+
+    try:
+        data = await fetch_usage(virtual_key)
+        rate = await fetch_usd_thb_rate()
+        embed = format_usage_embed(data, rate)
+        embed.set_footer(text=f"Requested by {interaction.user}")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except aiohttp.ClientResponseError as e:
+        status = e.status
+        if status == 401:
+            msg = ("🔐 **Authentication failed.** Your virtual key may be invalid or expired.\n"
+                   "Use **`/reset-key`** to update your key.")
+        elif status == 404:
+            msg = ("❌ Key not found. The virtual key may have been deleted.\n"
+                   "Use **`/reset-key`** to register a new key.")
+        else:
+            msg = (f"❌ Error fetching usage data (HTTP {status}).\n"
+                   "Use **`/reset-key`** to update your key.")
+        await interaction.followup.send(msg, ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(
+            f"❌ Unexpected error: `{type(e).__name__}`", ephemeral=True
+        )
+
+
+async def handle_models(interaction: discord.Interaction):
+    """Core logic for /models — callable from slash command or button."""
+    user_id = str(interaction.user.id)
+    virtual_key = get_user_key(user_id)
+
+    if virtual_key is None:
+        if interaction.response.is_done():
+            await interaction.followup.send_modal(ModelsKeyModal())
+        else:
+            await interaction.response.send_modal(ModelsKeyModal())
+        return
+
+    if not interaction.response.is_done():
+        await interaction.response.defer(ephemeral=True)
+
+    try:
+        data = await fetch_models(virtual_key)
+        embed = format_models_embed(data)
+        embed.set_footer(text=f"Requested by {interaction.user}")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except aiohttp.ClientResponseError as e:
+        status = e.status
+        if status == 401:
+            msg = ("🔐 **Authentication failed.** Your virtual key may be invalid or expired.\n"
+                   "Use **`/reset-key`** to update your key.")
+        elif status == 404:
+            msg = ("❌ Key not found. The virtual key may have been deleted.\n"
+                   "Use **`/reset-key`** to register a new key.")
+        else:
+            msg = (f"❌ Error fetching models (HTTP {status}).\n"
+                   "Use **`/reset-key`** to update your key.")
+        await interaction.followup.send(msg, ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(
+            f"❌ Unexpected error: `{type(e).__name__}`", ephemeral=True
+        )
+
+
+async def handle_reset_key(interaction: discord.Interaction):
+    """Core logic for /reset-key — callable from slash command or button."""
+    user_id = str(interaction.user.id)
+    existing = get_user_key(user_id)
+
+    if existing is None:
+        msg = ("⚠️ You don't have a registered virtual key yet.\n"
+               "Use **`/usage`** to set one up first.")
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+        return
+
+    if interaction.response.is_done():
+        await interaction.followup.send_modal(ResetKeyModal())
+    else:
+        await interaction.response.send_modal(ResetKeyModal())
+
+
+async def handle_delete_key(interaction: discord.Interaction):
+    """Core logic for /delete-key — callable from slash command or button."""
+    user_id = str(interaction.user.id)
+    existing = get_user_key(user_id)
+
+    if existing is None:
+        msg = "⚠️ You don't have any registered data to delete."
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+        return
+
+    deleted = delete_user_key(user_id)
+    if deleted:
+        msg = "✅ Your data has been deleted successfully."
+    else:
+        msg = "❌ Failed to delete your data. Please try again."
+
+    if interaction.response.is_done():
+        await interaction.followup.send(msg, ephemeral=True)
+    else:
+        await interaction.response.send_message(msg, ephemeral=True)
+
+
+# ── Buttons / Views ──────────────────────────────────────────────
+class UsageButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Usage Stats", style=discord.ButtonStyle.primary,
+                         custom_id="help_usage", emoji="📊")
+
+    async def callback(self, interaction: discord.Interaction):
+        await handle_usage(interaction)
+
+
+class ModelsButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Models", style=discord.ButtonStyle.primary,
+                         custom_id="help_models", emoji="🤖")
+
+    async def callback(self, interaction: discord.Interaction):
+        await handle_models(interaction)
+
+
+class ResetKeyButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Reset Key", style=discord.ButtonStyle.secondary,
+                         custom_id="help_reset_key", emoji="🔑")
+
+    async def callback(self, interaction: discord.Interaction):
+        await handle_reset_key(interaction)
+
+
+class DeleteKeyButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Delete Key", style=discord.ButtonStyle.danger,
+                         custom_id="help_delete_key", emoji="🗑️")
+
+    async def callback(self, interaction: discord.Interaction):
+        await handle_delete_key(interaction)
+
+
+class HelpView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=120)
+        self.add_item(UsageButton())
+        self.add_item(ModelsButton())
+        self.add_item(ResetKeyButton())
+        self.add_item(DeleteKeyButton())
+
+
 # ── Modals ──────────────────────────────────────────────────────
 class UsageKeyModal(discord.ui.Modal, title="🔑 First-Time Setup — Enter Virtual Key"):
     key_input = discord.ui.TextInput(
@@ -240,6 +485,54 @@ class ResetKeyModal(discord.ui.Modal, title="🔑 Reset Virtual Key"):
         )
 
 
+class ModelsKeyModal(discord.ui.Modal, title="🔑 First-Time Setup — Enter Virtual Key"):
+    key_input = discord.ui.TextInput(
+        label="LiteLLM Virtual Key",
+        placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxx",
+        style=discord.TextStyle.short,
+        required=True,
+        min_length=1,
+        max_length=500,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        user_id = str(interaction.user.id)
+        virtual_key = self.key_input.value
+        save_user_key(user_id, virtual_key)
+
+        await interaction.response.send_message(
+            "✅ Virtual key saved! Fetching available models ...", ephemeral=True
+        )
+
+        try:
+            data = await fetch_models(virtual_key)
+            embed = format_models_embed(data)
+            embed.set_footer(text=f"Requested by {interaction.user}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except aiohttp.ClientResponseError as e:
+            status = e.status
+            if status == 401:
+                msg = (
+                    "🔐 **Authentication failed.** Your virtual key may be invalid or expired.\n"
+                    "Use **`/reset-key`** to update your key."
+                )
+            elif status == 404:
+                msg = (
+                    "❌ Key not found. The virtual key may have been deleted.\n"
+                    "Use **`/reset-key`** to register a new key."
+                )
+            else:
+                msg = (
+                    f"❌ Error fetching models (HTTP {status}).\n"
+                    "Use **`/reset-key`** to update your key."
+                )
+            await interaction.followup.send(msg, ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ Unexpected error: `{type(e).__name__}`", ephemeral=True
+            )
+
+
 # ── Bot ──────────────────────────────────────────────────────────
 class LiteLLMBot(CommandsBot):
     def __init__(self):
@@ -260,71 +553,79 @@ class LiteLLMBot(CommandsBot):
 bot = LiteLLMBot()
 
 
-# ── /usage ───────────────────────────────────────────────────────
+# ── Slash Commands (delegate to shared handlers) ─────────────────
 @bot.tree.command(
     name="usage",
     description="Check your LiteLLM usage statistics",
 )
 async def usage(interaction: discord.Interaction):
-    user_id = str(interaction.user.id)
-    virtual_key = get_user_key(user_id)
-
-    # First time? Prompt for key via modal.
-    if virtual_key is None:
-        await interaction.response.send_modal(UsageKeyModal())
-        return
-
-    # Known user — defer and fetch.
-    await interaction.response.defer(ephemeral=True)
-
-    try:
-        data = await fetch_usage(virtual_key)
-        rate = await fetch_usd_thb_rate()
-        embed = format_usage_embed(data, rate)
-        embed.set_footer(text=f"Requested by {interaction.user}")
-        await interaction.followup.send(embed=embed, ephemeral=True)
-    except aiohttp.ClientResponseError as e:
-        status = e.status
-        if status == 401:
-            msg = (
-                "🔐 **Authentication failed.** Your virtual key may be invalid or expired.\n"
-                "Use **`/reset-key`** to update your key."
-            )
-        elif status == 404:
-            msg = (
-                "❌ Key not found. The virtual key may have been deleted.\n"
-                "Use **`/reset-key`** to register a new key."
-            )
-        else:
-            msg = (
-                f"❌ Error fetching usage data (HTTP {status}).\n"
-                "Use **`/reset-key`** to update your key."
-            )
-        await interaction.followup.send(msg, ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(
-            f"❌ Unexpected error: `{type(e).__name__}`", ephemeral=True
-        )
+    await handle_usage(interaction)
 
 
-# ── /reset-key ──────────────────────────────────────────────────
+@bot.tree.command(
+    name="models",
+    description="List all models you have access to",
+)
+async def models(interaction: discord.Interaction):
+    await handle_models(interaction)
+
+
 @bot.tree.command(
     name="reset-key",
     description="Reset your LiteLLM virtual key",
 )
 async def reset_key(interaction: discord.Interaction):
-    user_id = str(interaction.user.id)
-    existing = get_user_key(user_id)
+    await handle_reset_key(interaction)
 
-    if existing is None:
-        await interaction.response.send_message(
-            "⚠️ You don't have a registered virtual key yet.\n"
-            "Use **`/usage`** to set one up first.",
-            ephemeral=True,
-        )
-        return
 
-    await interaction.response.send_modal(ResetKeyModal())
+@bot.tree.command(
+    name="delete-key",
+    description="Delete your data from the system",
+)
+async def delete_key(interaction: discord.Interaction):
+    await handle_delete_key(interaction)
+
+
+# ── /help ────────────────────────────────────────────────────────
+@bot.tree.command(
+    name="help",
+    description="Show all available commands with interactive buttons",
+)
+async def help_command(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="🤖 LiteLLM Bot — Commands",
+        description=(
+            "Here are all available commands. **Click a button below** to learn more "
+            "about each command, then type the slash command in chat to use it!"
+        ),
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text=f"Requested by {interaction.user}")
+
+    # Command details as fields
+    embed.add_field(
+        name="`/usage`",
+        value="📊 Check your LiteLLM usage statistics (spend, models, rate limits, etc.)",
+        inline=False,
+    )
+    embed.add_field(
+        name="`/models`",
+        value="🤖 List all AI models you have access to",
+        inline=False,
+    )
+    embed.add_field(
+        name="`/reset-key`",
+        value="🔑 Reset / update your LiteLLM virtual key",
+        inline=False,
+    )
+    embed.add_field(
+        name="`/delete-key`",
+        value="🗑️ Delete your data from the system",
+        inline=False,
+    )
+
+    await interaction.response.send_message(embed=embed, view=HelpView(), ephemeral=True)
 
 
 # ── Main ─────────────────────────────────────────────────────────
