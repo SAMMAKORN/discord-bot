@@ -11,7 +11,8 @@ services:
       BOT_TOKEN: ${BOT_TOKEN}
       MASTER_KEY: ${MASTER_KEY}
       LITELLM_BASE_URL: ${LITELLM_BASE_URL:-https://litellm.sam.co.th}
-      DB_PATH: ${DB_PATH:-/app/data/bot.db}
+      # DB_PATH hardcoded in Dockerfile as /app/data/bot.db
+      # Do NOT override — the named volume (bot-data) mounts at /app/data
 
     volumes:
       - bot-data:/app/data
