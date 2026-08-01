@@ -14,5 +14,5 @@ services:
       DB_PATH: ${DB_PATH:-/app/data/bot.db}
 
     volumes:
-      - ${COOLIFY_APP_DIR:-.}/data:/app/data
+      - ./data:/app/data
 
