@@ -12,6 +12,10 @@ COPY main.py .
 # Default database path for Docker
 ENV DB_PATH=/app/data/bot.db
 
+# Healthcheck: verify bot process is running
+HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
+    CMD pgrep -f "python main.py" > /dev/null || exit 1
+
 # Entrypoint fixes volume mount permissions before running as botuser
 # แก้ chown botuser:bot เป็น chown -R botuser:bot
 RUN printf '#!/bin/sh\nset -e\nDATA_DIR="$(dirname "${DB_PATH}")"\nmkdir -p "$DATA_DIR"\nchown -R botuser:bot "$DATA_DIR" 2>/dev/null || true\nchmod 755 "$DATA_DIR" 2>/dev/null || true\nexec su botuser -s /bin/sh -c "cd /app && python main.py"\n' > /docker-entrypoint.sh \
@@ -20,9 +24,6 @@ RUN printf '#!/bin/sh\nset -e\nDATA_DIR="$(dirname "${DB_PATH}")"\nmkdir -p "$DA
 # Create non-root user
 RUN addgroup --system bot && adduser --system --ingroup bot botuser \
     && mkdir -p /app/data && chown -R botuser:bot /app/data
-
-# Declare volume point for SQLite database persistence
-VOLUME ["/app/data"]
 
 # Run entrypoint as root (to fix volume permissions) then drop to botuser
 USER root
