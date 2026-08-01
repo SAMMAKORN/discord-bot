@@ -81,6 +81,9 @@ def delete_user_key(user_id: str) -> bool:
 
 
 # ── LiteLLM API ──────────────────────────────────────────────────
+_HTTP_TIMEOUT = aiohttp.ClientTimeout(total=30)
+
+
 async def fetch_usage(virtual_key: str) -> dict:
     url = f"{LITELLM_BASE_URL}/key/info"
     async with aiohttp.ClientSession() as session:
@@ -88,6 +91,7 @@ async def fetch_usage(virtual_key: str) -> dict:
             url,
             params={"key": virtual_key},
             headers={"Authorization": f"Bearer {MASTER_KEY}"},
+            timeout=_HTTP_TIMEOUT,
         ) as resp:
             resp.raise_for_status()
             return await resp.json()
@@ -99,6 +103,7 @@ async def fetch_models(virtual_key: str) -> dict:
         async with session.get(
             url,
             headers={"Authorization": f"Bearer {virtual_key}"},
+            timeout=_HTTP_TIMEOUT,
         ) as resp:
             resp.raise_for_status()
             return await resp.json()
@@ -248,6 +253,23 @@ def format_models_embed(data: dict) -> discord.Embed:
     return embed
 
 
+# ── Interaction helpers ──────────────────────────────────────────
+async def safe_send(interaction: discord.Interaction, **kwargs):
+    """Send a message using followup if response is already done, else initial response."""
+    if interaction.response.is_done():
+        await interaction.followup.send(**kwargs)
+    else:
+        await interaction.response.send(**kwargs)
+
+
+async def safe_send_modal(interaction: discord.Interaction, modal: discord.ui.Modal):
+    """Send a modal using followup if response is already done, else initial response."""
+    if interaction.response.is_done():
+        await interaction.followup.send_modal(modal)
+    else:
+        await interaction.response.send_modal(modal)
+
+
 # ── Command handlers (shared by slash commands and buttons) ──────
 async def handle_usage(interaction: discord.Interaction):
     """Core logic for /usage — callable from slash command or button."""
@@ -255,10 +277,7 @@ async def handle_usage(interaction: discord.Interaction):
     virtual_key = get_user_key(user_id)
 
     if virtual_key is None:
-        if interaction.response.is_done():
-            await interaction.followup.send_modal(UsageKeyModal())
-        else:
-            await interaction.response.send_modal(UsageKeyModal())
+        await safe_send_modal(interaction, KeySetupModal(action="usage"))
         return
 
     if not interaction.response.is_done():
@@ -271,17 +290,7 @@ async def handle_usage(interaction: discord.Interaction):
         embed.set_footer(text=f"Requested by {interaction.user}")
         await interaction.followup.send(embed=embed, ephemeral=True)
     except aiohttp.ClientResponseError as e:
-        status = e.status
-        if status == 401:
-            msg = ("🔐 **Authentication failed.** Your virtual key may be invalid or expired.\n"
-                   "Use **`/reset-key`** to update your key.")
-        elif status == 404:
-            msg = ("❌ Key not found. The virtual key may have been deleted.\n"
-                   "Use **`/reset-key`** to register a new key.")
-        else:
-            msg = (f"❌ Error fetching usage data (HTTP {status}).\n"
-                   "Use **`/reset-key`** to update your key.")
-        await interaction.followup.send(msg, ephemeral=True)
+        await interaction.followup.send(_error_message(e.status, "usage data"), ephemeral=True)
     except Exception as e:
         await interaction.followup.send(
             f"❌ Unexpected error: `{type(e).__name__}`", ephemeral=True
@@ -294,10 +303,7 @@ async def handle_models(interaction: discord.Interaction):
     virtual_key = get_user_key(user_id)
 
     if virtual_key is None:
-        if interaction.response.is_done():
-            await interaction.followup.send_modal(ModelsKeyModal())
-        else:
-            await interaction.response.send_modal(ModelsKeyModal())
+        await safe_send_modal(interaction, KeySetupModal(action="models"))
         return
 
     if not interaction.response.is_done():
@@ -309,17 +315,7 @@ async def handle_models(interaction: discord.Interaction):
         embed.set_footer(text=f"Requested by {interaction.user}")
         await interaction.followup.send(embed=embed, ephemeral=True)
     except aiohttp.ClientResponseError as e:
-        status = e.status
-        if status == 401:
-            msg = ("🔐 **Authentication failed.** Your virtual key may be invalid or expired.\n"
-                   "Use **`/reset-key`** to update your key.")
-        elif status == 404:
-            msg = ("❌ Key not found. The virtual key may have been deleted.\n"
-                   "Use **`/reset-key`** to register a new key.")
-        else:
-            msg = (f"❌ Error fetching models (HTTP {status}).\n"
-                   "Use **`/reset-key`** to update your key.")
-        await interaction.followup.send(msg, ephemeral=True)
+        await interaction.followup.send(_error_message(e.status, "models"), ephemeral=True)
     except Exception as e:
         await interaction.followup.send(
             f"❌ Unexpected error: `{type(e).__name__}`", ephemeral=True
@@ -334,41 +330,26 @@ async def handle_reset_key(interaction: discord.Interaction):
     if existing is None:
         msg = ("⚠️ You don't have a registered virtual key yet.\n"
                "Use **`/usage`** to set one up first.")
-        if interaction.response.is_done():
-            await interaction.followup.send(msg, ephemeral=True)
-        else:
-            await interaction.response.send_message(msg, ephemeral=True)
+        await safe_send(interaction, content=msg, ephemeral=True)
         return
 
-    if interaction.response.is_done():
-        await interaction.followup.send_modal(ResetKeyModal())
-    else:
-        await interaction.response.send_modal(ResetKeyModal())
+    await safe_send_modal(interaction, ResetKeyModal())
 
 
 async def handle_delete_key(interaction: discord.Interaction):
-    """Core logic for /delete-key — callable from slash command or button."""
+    """Core logic for /delete-key — shows confirmation view."""
     user_id = str(interaction.user.id)
     existing = get_user_key(user_id)
 
     if existing is None:
         msg = "⚠️ You don't have any registered data to delete."
-        if interaction.response.is_done():
-            await interaction.followup.send(msg, ephemeral=True)
-        else:
-            await interaction.response.send_message(msg, ephemeral=True)
+        await safe_send(interaction, content=msg, ephemeral=True)
         return
 
-    deleted = delete_user_key(user_id)
-    if deleted:
-        msg = "✅ Your data has been deleted successfully."
-    else:
-        msg = "❌ Failed to delete your data. Please try again."
-
-    if interaction.response.is_done():
-        await interaction.followup.send(msg, ephemeral=True)
-    else:
-        await interaction.response.send_message(msg, ephemeral=True)
+    # Show confirmation buttons
+    await safe_send(interaction,
+                    content="⚠️ **Are you sure?** This will permanently delete your virtual key and all data.",
+                    view=DeleteConfirmView(user_id), ephemeral=True)
 
 
 # ── Buttons / Views ──────────────────────────────────────────────
@@ -417,8 +398,45 @@ class HelpView(discord.ui.View):
         self.add_item(DeleteKeyButton())
 
 
+# ── Delete confirmation ──────────────────────────────────────────
+class _DeleteConfirmBtn(discord.ui.Button):
+    def __init__(self, user_id: str):
+        super().__init__(label="Yes, Delete", style=discord.ButtonStyle.danger,
+                         custom_id="delete_confirm_yes")
+        self._user_id = user_id
+
+    async def callback(self, interaction: discord.Interaction):
+        deleted = delete_user_key(self._user_id)
+        msg = "✅ Your data has been deleted successfully." if deleted \
+              else "❌ Failed to delete your data. Please try again."
+        await interaction.response.send_message(msg, ephemeral=True)
+        self.view.stop()
+
+
+class _DeleteCancelBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Cancel", style=discord.ButtonStyle.secondary,
+                         custom_id="delete_confirm_no")
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message("✅ Cancelled. Your data is safe.", ephemeral=True)
+        self.view.stop()
+
+
+class DeleteConfirmView(discord.ui.View):
+    def __init__(self, user_id: str):
+        super().__init__(timeout=60)
+        self.add_item(_DeleteConfirmBtn(user_id))
+        self.add_item(_DeleteCancelBtn())
+
+
 # ── Modals ──────────────────────────────────────────────────────
-class UsageKeyModal(discord.ui.Modal, title="🔑 First-Time Setup — Enter Virtual Key"):
+class KeySetupModal(discord.ui.Modal, title="🔑 First-Time Setup — Enter Virtual Key"):
+    """Unified modal for key setup — handles both /usage and /models flows."""
+    def __init__(self, action: str = "usage"):
+        super().__init__()
+        self._action = action
+
     key_input = discord.ui.TextInput(
         label="LiteLLM Virtual Key",
         placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxx",
@@ -433,38 +451,41 @@ class UsageKeyModal(discord.ui.Modal, title="🔑 First-Time Setup — Enter Vir
         virtual_key = self.key_input.value
         save_user_key(user_id, virtual_key)
 
-        await interaction.response.send_message(
-            "✅ Virtual key saved! Fetching usage data ...", ephemeral=True
-        )
-
-        try:
-            data = await fetch_usage(virtual_key)
-            rate = await fetch_usd_thb_rate()
-            embed = format_usage_embed(data, rate)
-            embed.set_footer(text=f"Requested by {interaction.user}")
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        except aiohttp.ClientResponseError as e:
-            status = e.status
-            if status == 401:
-                msg = (
-                    "🔐 **Authentication failed.** Your virtual key may be invalid or expired.\n"
-                    "Use **`/reset-key`** to update your key."
-                )
-            elif status == 404:
-                msg = (
-                    "❌ Key not found. The virtual key may have been deleted.\n"
-                    "Use **`/reset-key`** to register a new key."
-                )
-            else:
-                msg = (
-                    f"❌ Error fetching usage data (HTTP {status}).\n"
-                    "Use **`/reset-key`** to update your key."
-                )
-            await interaction.followup.send(msg, ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(
-                f"❌ Unexpected error: `{type(e).__name__}`", ephemeral=True
+        if self._action == "usage":
+            await interaction.response.send_message(
+                "✅ Virtual key saved! Fetching usage data ...", ephemeral=True
             )
+            try:
+                data = await fetch_usage(virtual_key)
+                rate = await fetch_usd_thb_rate()
+                embed = format_usage_embed(data, rate)
+                embed.set_footer(text=f"Requested by {interaction.user}")
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            except aiohttp.ClientResponseError as e:
+                await interaction.followup.send(
+                    _error_message(e.status, "usage data"), ephemeral=True
+                )
+            except Exception as e:
+                await interaction.followup.send(
+                    f"❌ Unexpected error: `{type(e).__name__}`", ephemeral=True
+                )
+        else:
+            await interaction.response.send_message(
+                "✅ Virtual key saved! Fetching available models ...", ephemeral=True
+            )
+            try:
+                data = await fetch_models(virtual_key)
+                embed = format_models_embed(data)
+                embed.set_footer(text=f"Requested by {interaction.user}")
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            except aiohttp.ClientResponseError as e:
+                await interaction.followup.send(
+                    _error_message(e.status, "models"), ephemeral=True
+                )
+            except Exception as e:
+                await interaction.followup.send(
+                    f"❌ Unexpected error: `{type(e).__name__}`", ephemeral=True
+                )
 
 
 class ResetKeyModal(discord.ui.Modal, title="🔑 Reset Virtual Key"):
@@ -485,52 +506,17 @@ class ResetKeyModal(discord.ui.Modal, title="🔑 Reset Virtual Key"):
         )
 
 
-class ModelsKeyModal(discord.ui.Modal, title="🔑 First-Time Setup — Enter Virtual Key"):
-    key_input = discord.ui.TextInput(
-        label="LiteLLM Virtual Key",
-        placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxx",
-        style=discord.TextStyle.short,
-        required=True,
-        min_length=1,
-        max_length=500,
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        user_id = str(interaction.user.id)
-        virtual_key = self.key_input.value
-        save_user_key(user_id, virtual_key)
-
-        await interaction.response.send_message(
-            "✅ Virtual key saved! Fetching available models ...", ephemeral=True
-        )
-
-        try:
-            data = await fetch_models(virtual_key)
-            embed = format_models_embed(data)
-            embed.set_footer(text=f"Requested by {interaction.user}")
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        except aiohttp.ClientResponseError as e:
-            status = e.status
-            if status == 401:
-                msg = (
-                    "🔐 **Authentication failed.** Your virtual key may be invalid or expired.\n"
-                    "Use **`/reset-key`** to update your key."
-                )
-            elif status == 404:
-                msg = (
-                    "❌ Key not found. The virtual key may have been deleted.\n"
-                    "Use **`/reset-key`** to register a new key."
-                )
-            else:
-                msg = (
-                    f"❌ Error fetching models (HTTP {status}).\n"
-                    "Use **`/reset-key`** to update your key."
-                )
-            await interaction.followup.send(msg, ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(
-                f"❌ Unexpected error: `{type(e).__name__}`", ephemeral=True
-            )
+def _error_message(status: int, context: str = "data") -> str:
+    """Build a user-friendly error message from HTTP status code."""
+    if status == 401:
+        return ("🔐 **Authentication failed.** Your virtual key may be invalid or expired.\n"
+                "Use **`/reset-key`** to update your key.")
+    elif status == 404:
+        return ("❌ Key not found. The virtual key may have been deleted.\n"
+                "Use **`/reset-key`** to register a new key.")
+    else:
+        return (f"❌ Error fetching {context} (HTTP {status}).\n"
+                "Use **`/reset-key`** to update your key.")
 
 
 # ── Bot ──────────────────────────────────────────────────────────
@@ -595,8 +581,8 @@ async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(
         title="🤖 LiteLLM Bot — Commands",
         description=(
-            "Here are all available commands. **Click a button below** to learn more "
-            "about each command, then type the slash command in chat to use it!"
+            "Here are all available commands. **Click a button below** to run each "
+            "command directly, or type the slash command in chat!"
         ),
         color=discord.Color.blurple(),
         timestamp=datetime.now(timezone.utc),
