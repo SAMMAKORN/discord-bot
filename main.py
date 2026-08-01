@@ -15,6 +15,10 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 MASTER_KEY = os.getenv("MASTER_KEY", "")
 LITELLM_BASE_URL = os.getenv("LITELLM_BASE_URL", "https://litellm.sam.co.th")
+# Database path is FIXED — do not make configurable via env var.
+# A mismatched DB_PATH causes data loss on every deploy (file written
+# outside the named volume at /app/data). Local dev uses .env to
+# override; Docker always uses /app/data/bot.db.
 DB_PATH = os.getenv("DB_PATH", "/app/data/bot.db")
 
 # ── Database ─────────────────────────────────────────────────────
