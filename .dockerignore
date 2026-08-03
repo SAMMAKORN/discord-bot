@@ -11,13 +11,17 @@ data/
 # Environment / Secrets
 .env
 
-# Git
-.git/
-
 # IDE
 .vscode/
 .idea/
 
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Git
+.git/
+
 # Docs
 README.md
-CHANGELOG.md

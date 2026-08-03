@@ -36,12 +36,11 @@ cp .env.example .env
 BOT_TOKEN=your_discord_bot_token
 MASTER_KEY=your_litellm_master_key
 LITELLM_BASE_URL=https://litellm.sam.co.th
+# Local dev only — Docker/Coolify uses /app/data/bot.db via named volume
 DB_PATH=users.db
 ```
 
 > ⚠️ `.env` is git-ignored — never commit it.
->
-> ⚠️ `DB_PATH=users.db` is **local dev only**. In Docker/Coolify the path is hardcoded to `/app/data/bot.db` — never set `DB_PATH` in production.
 
 ### 4. Run the Bot
 
@@ -57,7 +56,7 @@ All responses are **ephemeral** (only visible to the user who invoked the comman
 | -------------- | ------------------------------------------------------------------------ |
 | `/help`        | Show all available commands with interactive buttons                     |
 | `/usage`       | View your LiteLLM usage stats (first time: prompts for your virtual key) |
-| `/models`      | List all models with token limits, costs, and capabilities (first time: prompts for your virtual key) |
+| `/models`      | List all models you have access to (first time: prompts for your virtual key) |
 | `/reset-key`   | Replace your registered virtual key                                      |
 | `/delete-key`  | Delete your virtual key and all data from the bot                        |
 
@@ -76,15 +75,7 @@ The `/help` command displays an embed listing all available commands, along with
 
 ## `/models` Command
 
-The `/models` command displays the models accessible with your virtual key, grouped by provider (e.g., `openai`, `anthropic`, `google`). For each model it shows:
-
-- **📏 Context Window** — Maximum token count
-- **Capabilities** — 👁️ Vision, 🔧 Function Calling, 📋 JSON Mode, 🎨 Image Generation
-- **💲 Cost** — Input and output price per million tokens
-
-If the list is too long for a single embed, it falls back to a concise list grouped by provider, and further to a provider-count summary if still too long.
-
-> **Note:** The detail shown depends on what metadata your LiteLLM proxy returns via the `/v1/models` endpoint. Not all providers include cost or capability data.
+The `/models` command displays the models accessible with your virtual key, grouped by provider (e.g., `openai`, `anthropic`, `google`). If the list is too long for a single embed, it shows a summary with model counts per provider.
 
 ## Embed Fields
 
@@ -104,7 +95,7 @@ The `/usage` command displays a rich embed with the following fields:
 
 ## How It Works
 
-1. **First run** — User types `/usage` or `/models` → bot opens a modal asking for their virtual key → key is saved to SQLite → data is fetched and displayed as a rich embed.
+1. **First run** — User types `/usage` or `/models` → bot opens a modal asking for their virtual key → key is saved to SQLite (`bot.db`) → data is fetched and displayed as a rich embed.
 2. **Subsequent runs** — `/usage` or `/models` looks up the stored key and fetches data immediately.
 3. **`/reset-key`** — Opens a modal to replace the stored virtual key.
 4. **`/delete-key`** — Permanently deletes the user's virtual key and all associated data from the bot's database.
@@ -128,16 +119,16 @@ For always-online deployment, host on a VPS (Render, Railway, DigitalOcean, etc.
 ## Project Structure
 
 ```
-├── main.py              # Bot source code
-├── requirements.txt     # Python dependencies
-├── Dockerfile           # Docker image (hardcoded DB at /app/data/bot.db)
-├── docker-compose.yml   # Docker Compose (named volume: bot-data → /app/data)
-├── .dockerignore        # Excluded from Docker build context
-├── .env                 # Secrets (git-ignored)
-├── .env.example         # Template for .env
-├── .gitignore           # Git exclusions
-├── CHANGELOG.md         # Version history
-├── users.db             # SQLite database (local dev only, git-ignored)
+├── main.py            # Bot source code
+├── requirements.txt   # Python dependencies
+├── Dockerfile         # Docker build (includes HEALTHCHECK)
+├── docker-compose.yml # Local / Coolify compose (named volume: discord-bot-data)
+├── .dockerignore
+├── .env               # Secrets (git-ignored)
+├── .env.example       # Template for .env
+├── .gitignore
+├── CHANGELOG.md       # Version history
+├── bot.db             # SQLite database (local dev only, git-ignored)
 └── README.md
 ```
 
@@ -154,10 +145,11 @@ For always-online deployment, host on a VPS (Render, Railway, DigitalOcean, etc.
 | `BOT_TOKEN`        | Yes      | —                           |
 | `MASTER_KEY`       | Yes      | —                           |
 | `LITELLM_BASE_URL` | No       | `https://litellm.sam.co.th` |
+| `DB_PATH`          | No       | `/app/data/bot.db`          |
 
-4. Coolify will build and deploy the bot. Database is persisted via a **named Docker volume** (`bot-data` → `/app/data`) and survives redeployments automatically.
+4. Coolify will build and deploy the bot. Database is persisted via a **named Docker volume** (`discord-bot-data` → `/app/data`) and survives redeployments automatically.
 
-> **⚠️ Important:** The database path is hardcoded to `/app/data/bot.db`. Do **not** set `DB_PATH` in Coolify environment variables — it will cause data loss if the path differs from the volume mount.
+> **⚠️ Important:** Do **not** set `DB_PATH` to a bare filename (e.g. `users.db`). Always use `/app/data/bot.db` so the file is written inside the persistent volume.
 
 ### Healthcheck
 
@@ -169,7 +161,7 @@ Interval: 60s | Timeout: 10s | Start period: 30s | Retries: 3
 
 The check verifies:
 1. The `python` process is running
-2. The database file (`/app/data/bot.db`) exists — confirming the bot has initialized successfully
+2. The database file (`$DB_PATH`) exists — confirming the bot has initialized successfully
 
 If the container becomes **unhealthy**, Coolify/Docker will automatically restart it.
 
@@ -177,8 +169,7 @@ If the container becomes **unhealthy**, Coolify/Docker will automatically restar
 
 ```bash
 cp .env.example .env
-# Fill in BOT_TOKEN, MASTER_KEY, and LITELLM_BASE_URL
-# For local Docker: DO NOT set DB_PATH (use the default /app/data/bot.db)
+# Fill in .env with your tokens (use DB_PATH=users.db for local dev)
 docker compose up --build -d
 ```
 
