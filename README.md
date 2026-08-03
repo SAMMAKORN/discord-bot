@@ -56,6 +56,7 @@ All responses are **ephemeral** (only visible to the user who invoked the comman
 | -------------- | ------------------------------------------------------------------------ |
 | `/help`        | Show all available commands with interactive buttons                     |
 | `/usage`       | View your LiteLLM usage stats (first time: prompts for your virtual key) |
+| `/usage-token` | View your token usage stats — all-time and today (input, output, total tokens, requests) |
 | `/models`      | List all models you have access to (first time: prompts for your virtual key) |
 | `/reset-key`   | Replace your registered virtual key                                      |
 | `/delete-key`  | Delete your virtual key and all data from the bot                        |
@@ -67,6 +68,7 @@ The `/help` command displays an embed listing all available commands, along with
 | Button           | Action                                                     |
 | ---------------- | ---------------------------------------------------------- |
 | **📊 Usage Stats**   | Runs `/usage` to check your LiteLLM usage statistics       |
+| **🪙 Token Usage**   | Runs `/usage-token` to check your token usage statistics   |
 | **🤖 Models**        | Runs `/models` to list all accessible AI models            |
 | **🔑 Reset Key**     | Opens a modal to reset/update your virtual key             |
 | **🗑️ Delete Key**    | Deletes your registered virtual key and data from the bot  |
@@ -76,6 +78,15 @@ The `/help` command displays an embed listing all available commands, along with
 ## `/models` Command
 
 The `/models` command displays the models accessible with your virtual key, grouped by provider (e.g., `openai`, `anthropic`, `google`). If the list is too long for a single embed, it shows a summary with model counts per provider.
+
+## `/usage-token` Command
+
+The `/usage-token` command displays your token consumption in two sections:
+
+- **All-Time** — Total input tokens, output tokens, combined total, and request count since the key was created.
+- **Today** — Input tokens, output tokens, combined total, and request count for the current day in **Bangkok time** (Asia/Bangkok timezone).
+
+It also lists the models associated with your virtual key. This command is useful for tracking daily token consumption against your all-time usage without the spend/budget details shown by `/usage`.
 
 ## Embed Fields
 

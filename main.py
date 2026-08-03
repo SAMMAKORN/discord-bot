@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 from dotenv import load_dotenv
@@ -97,6 +98,31 @@ async def fetch_usage(virtual_key: str) -> dict:
             return await resp.json()
 
 
+async def fetch_today_token_usage(virtual_key: str) -> dict:
+    """Fetch today's token usage from LiteLLM reporting endpoint.
+
+    Returns an empty dict if the reporting endpoint is unavailable
+    (e.g., the proxy has no database backend configured).
+    """
+    today = datetime.now(ZoneInfo("Asia/Bangkok")).strftime("%Y-%m-%d")
+    url = f"{LITELLM_BASE_URL}/v2/user_accounting/reporting"
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            url,
+            json={
+                "start_date": f"{today}T00:00:00Z",
+                "end_date": f"{today}T23:59:59Z",
+                "filters": {"keys": [virtual_key]},
+            },
+            headers={"Authorization": f"Bearer {MASTER_KEY}"},
+            timeout=_HTTP_TIMEOUT,
+        ) as resp:
+            if resp.status == 404:
+                return {}
+            resp.raise_for_status()
+            return await resp.json()
+
+
 async def fetch_models(virtual_key: str) -> dict:
     url = f"{LITELLM_BASE_URL}/v1/models"
     async with aiohttp.ClientSession() as session:
@@ -124,9 +150,116 @@ def _truncate_key(key: str) -> str:
     return f"****{key[-8:]}" if len(key) > 8 else key
 
 
+def format_token_usage_embed(data: dict, today_data: dict) -> discord.Embed:
+    """Format token usage stats from LiteLLM key info response."""
+    info = (data or {}).get("info") or {}
+
+    # All-time token counts from LiteLLM key info
+    tokens_in = info.get("tokens_in") or 0
+    tokens_out = info.get("tokens_out") or 0
+    total_tokens = tokens_in + tokens_out
+    has_token_fields = "tokens_in" in info or "tokens_out" in info
+
+    # Request count
+    request_count = info.get("request_count", 0) or 0
+
+    # Key metadata
+    key = (data or {}).get("key", "N/A")
+    key_name = info.get("key_name", "N/A")
+    models = info.get("models", []) or []
+    models_str = ", ".join(models) if models else "All models"
+
+    # Today's token counts from reporting endpoint
+    today_in = 0
+    today_out = 0
+    today_total = 0
+    today_requests = 0
+    today_rows = (today_data or {}).get("data", []) or []
+    if today_rows:
+        today_in = sum(row.get("tokens_in", 0) or 0 for row in today_rows)
+        today_out = sum(row.get("tokens_out", 0) or 0 for row in today_rows)
+        today_total = today_in + today_out
+        today_requests = len(today_rows)
+
+    now_bkk = datetime.now(ZoneInfo("Asia/Bangkok"))
+    today_str = now_bkk.strftime("%b %d, %Y")
+
+    embed = discord.Embed(
+        title="🪙 Token Usage Report",
+        color=discord.Color.gold(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_author(name=key_name)
+    embed.add_field(name="🔑 Virtual Key", value=f"```{_truncate_key(key)}```", inline=True)
+
+    # ── All-time section ──
+    embed.add_field(name="⏱️ **All-Time**", value="​", inline=False)
+    embed.add_field(
+        name="📥 Input Tokens",
+        value=f"```{f'{tokens_in:,}':>15}```",
+        inline=True,
+    )
+    embed.add_field(
+        name="📤 Output Tokens",
+        value=f"```{f'{tokens_out:,}':>15}```",
+        inline=True,
+    )
+    embed.add_field(
+        name="📊 Total Tokens",
+        value=f"```{f'{total_tokens:,}':>15}```",
+        inline=True,
+    )
+    embed.add_field(
+        name="🔢 Requests",
+        value=f"```{f'{request_count:,}':>15}```",
+        inline=True,
+    )
+
+    # ── Today section ──
+    embed.add_field(name=f"📅 **Today ({today_str}) — Bangkok Time**", value="​", inline=False)
+    embed.add_field(
+        name="📥 Input Tokens",
+        value=f"```{f'{today_in:,}':>15}```",
+        inline=True,
+    )
+    embed.add_field(
+        name="📤 Output Tokens",
+        value=f"```{f'{today_out:,}':>15}```",
+        inline=True,
+    )
+    embed.add_field(
+        name="📊 Total Tokens",
+        value=f"```{f'{today_total:,}':>15}```",
+        inline=True,
+    )
+    embed.add_field(
+        name="🔢 Requests",
+        value=f"```{f'{today_requests:,}':>15}```",
+        inline=True,
+    )
+
+    # Token data availability note
+    if not has_token_fields and request_count > 0:
+        embed.add_field(
+            name="⚠️ Note",
+            value="Token data not available from the API. Request counts are reported.",
+            inline=False,
+        )
+
+    models_display = models_str if len(models_str) <= 100 else f"{models_str[:97]}..."
+    embed.add_field(
+        name="🤖 Models Used",
+        value=models_display,
+        inline=False,
+    )
+
+    return embed
+
+
 def format_usage_embed(data: dict, usd_thb_rate: float = 0.0) -> discord.Embed:
+    data = data or {}
+    info = data.get("info") or {}
     key = data.get("key", "N/A")
-    info = data.get("info", {})
 
     spend = info.get("spend", 0.0)
     models = info.get("models", [])
@@ -190,7 +323,8 @@ def format_usage_embed(data: dict, usd_thb_rate: float = 0.0) -> discord.Embed:
         embed.add_field(name="💵 Max Budget", value=f"${max_budget:,.2f}", inline=True)
 
     models_str = ", ".join(models) if models else "All models"
-    embed.add_field(name="🤖 Models", value=models_str, inline=True)
+    models_display = models_str if len(models_str) <= 100 else f"{models_str[:97]}..."
+    embed.add_field(name="🤖 Models", value=models_display, inline=True)
 
     if config:
         config_str = "\n".join(f"{k}: {v}" for k, v in config.items())
@@ -322,6 +456,34 @@ async def handle_models(interaction: discord.Interaction):
         )
 
 
+async def handle_usage_token(interaction: discord.Interaction):
+    """Core logic for /usage-token — shows token usage stats."""
+    user_id = str(interaction.user.id)
+    virtual_key = get_user_key(user_id)
+
+    if virtual_key is None:
+        await safe_send_modal(interaction, KeySetupModal(action="usage-token"))
+        return
+
+    if not interaction.response.is_done():
+        await interaction.response.defer(ephemeral=True)
+
+    try:
+        data, today_data = await asyncio.gather(
+            fetch_usage(virtual_key),
+            fetch_today_token_usage(virtual_key),
+        )
+        embed = format_token_usage_embed(data, today_data)
+        embed.set_footer(text=f"Requested by {interaction.user}")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except aiohttp.ClientResponseError as e:
+        await interaction.followup.send(_error_message(e.status, "token usage data"), ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(
+            f"❌ Unexpected error: `{type(e).__name__}`", ephemeral=True
+        )
+
+
 async def handle_reset_key(interaction: discord.Interaction):
     """Core logic for /reset-key — callable from slash command or button."""
     user_id = str(interaction.user.id)
@@ -356,7 +518,7 @@ async def handle_delete_key(interaction: discord.Interaction):
 class UsageButton(discord.ui.Button):
     def __init__(self):
         super().__init__(label="Usage Stats", style=discord.ButtonStyle.primary,
-                         custom_id="help_usage", emoji="📊")
+                         custom_id="help_usage", emoji="📊", row=0)
 
     async def callback(self, interaction: discord.Interaction):
         await handle_usage(interaction)
@@ -365,7 +527,7 @@ class UsageButton(discord.ui.Button):
 class ModelsButton(discord.ui.Button):
     def __init__(self):
         super().__init__(label="Models", style=discord.ButtonStyle.primary,
-                         custom_id="help_models", emoji="🤖")
+                         custom_id="help_models", emoji="🤖", row=0)
 
     async def callback(self, interaction: discord.Interaction):
         await handle_models(interaction)
@@ -374,7 +536,7 @@ class ModelsButton(discord.ui.Button):
 class ResetKeyButton(discord.ui.Button):
     def __init__(self):
         super().__init__(label="Reset Key", style=discord.ButtonStyle.secondary,
-                         custom_id="help_reset_key", emoji="🔑")
+                         custom_id="help_reset_key", emoji="🔑", row=1)
 
     async def callback(self, interaction: discord.Interaction):
         await handle_reset_key(interaction)
@@ -383,16 +545,26 @@ class ResetKeyButton(discord.ui.Button):
 class DeleteKeyButton(discord.ui.Button):
     def __init__(self):
         super().__init__(label="Delete Key", style=discord.ButtonStyle.danger,
-                         custom_id="help_delete_key", emoji="🗑️")
+                         custom_id="help_delete_key", emoji="🗑️", row=1)
 
     async def callback(self, interaction: discord.Interaction):
         await handle_delete_key(interaction)
+
+
+class UsageTokenButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Token Usage", style=discord.ButtonStyle.primary,
+                         custom_id="help_usage_token", emoji="🪙", row=0)
+
+    async def callback(self, interaction: discord.Interaction):
+        await handle_usage_token(interaction)
 
 
 class HelpView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=120)
         self.add_item(UsageButton())
+        self.add_item(UsageTokenButton())
         self.add_item(ModelsButton())
         self.add_item(ResetKeyButton())
         self.add_item(DeleteKeyButton())
@@ -464,6 +636,26 @@ class KeySetupModal(discord.ui.Modal, title="🔑 First-Time Setup — Enter Vir
             except aiohttp.ClientResponseError as e:
                 await interaction.followup.send(
                     _error_message(e.status, "usage data"), ephemeral=True
+                )
+            except Exception as e:
+                await interaction.followup.send(
+                    f"❌ Unexpected error: `{type(e).__name__}`", ephemeral=True
+                )
+        elif self._action == "usage-token":
+            await interaction.response.send_message(
+                "✅ Virtual key saved! Fetching token usage data ...", ephemeral=True
+            )
+            try:
+                data, today_data = await asyncio.gather(
+                    fetch_usage(virtual_key),
+                    fetch_today_token_usage(virtual_key),
+                )
+                embed = format_token_usage_embed(data, today_data)
+                embed.set_footer(text=f"Requested by {interaction.user}")
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            except aiohttp.ClientResponseError as e:
+                await interaction.followup.send(
+                    _error_message(e.status, "token usage data"), ephemeral=True
                 )
             except Exception as e:
                 await interaction.followup.send(
@@ -572,6 +764,14 @@ async def delete_key(interaction: discord.Interaction):
     await handle_delete_key(interaction)
 
 
+@bot.tree.command(
+    name="usage-token",
+    description="Check your token usage statistics (input, output, total)",
+)
+async def usage_token(interaction: discord.Interaction):
+    await handle_usage_token(interaction)
+
+
 # ── /help ────────────────────────────────────────────────────────
 @bot.tree.command(
     name="help",
@@ -593,6 +793,11 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(
         name="`/usage`",
         value="📊 Check your LiteLLM usage statistics (spend, models, rate limits, etc.)",
+        inline=False,
+    )
+    embed.add_field(
+        name="`/usage-token`",
+        value="🪙 Check your token usage (input tokens, output tokens, total tokens, requests)",
         inline=False,
     )
     embed.add_field(
