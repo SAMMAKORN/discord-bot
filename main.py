@@ -101,7 +101,8 @@ async def fetch_usage(virtual_key: str) -> dict:
             return await resp.json()
 
 
-async def fetch_models(virtual_key: str) -> dict:
+async def fetch_accessible_models(virtual_key: str) -> list[str]:
+    """Get the list of model IDs the user's virtual key has access to."""
     url = f"{LITELLM_BASE_URL}/v1/models"
     async with aiohttp.ClientSession() as session:
         async with session.get(
@@ -110,7 +111,39 @@ async def fetch_models(virtual_key: str) -> dict:
             timeout=_HTTP_TIMEOUT,
         ) as resp:
             resp.raise_for_status()
-            return await resp.json()
+            data = await resp.json()
+            return [m["id"] for m in data.get("data", [])]
+
+
+async def fetch_model_configs() -> dict[str, dict]:
+    """Fetch all model configs from LiteLLM admin endpoint (needs master key).
+
+    Returns a dict mapping model_name → model_info (cost, tokens, capabilities, …).
+    """
+    url = f"{LITELLM_BASE_URL}/models"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            url,
+            headers={"Authorization": f"Bearer {MASTER_KEY}"},
+            timeout=_HTTP_TIMEOUT,
+        ) as resp:
+            resp.raise_for_status()
+            configs = await resp.json()
+
+    # Build lookup: every known name variant → model_info
+    lookup: dict[str, dict] = {}
+    for entry in configs:
+        info = entry.get("model_info", {})
+        name = entry.get("model_name", "")
+        if name and info:
+            lookup[name] = info
+            # Also index by common prefixes (openai/gpt-4 → gpt-4)
+            for prefix in ("openai", "anthropic", "google", "azure", "bedrock", "vertex"):
+                aliased = f"{prefix}/{name}"
+                if aliased not in lookup:
+                    lookup[aliased] = info
+
+    return lookup
 
 
 async def fetch_usd_thb_rate() -> float:
@@ -217,25 +250,9 @@ _MOD_ICONS: dict[str, str] = {
 }
 
 
-def _format_model_info(m: dict) -> str:
-    """Format a single model's token, cost, and capability details."""
-    id_ = m.get("id", "unknown")
-
-    # Try nested info/metadata first (LiteLLM /v1/models may include these)
-    info = m.get("info", {}) or m.get("metadata", {})
-    if not info and isinstance(m.get("root"), dict):
-        root = m["root"]
-        info = root.get("info", {}) or root.get("metadata", {})
-
-    # Fallback: read top-level keys directly
-    if not info:
-        info = {k: v for k, v in m.items()
-                if k not in ("id", "object", "created", "owned_by", "permission", "root")}
-
-    if not info:
-        return f"`{id_}`"
-
-    parts = [f"**`{id_}`**"]
+def _format_model_line(model_id: str, info: dict) -> str:
+    """Format a single model's token, cost, and capability details from admin config info."""
+    parts = [f"**`{model_id}`**"]
 
     # ── Token info ───────────────────────────────────────────────
     context = (
@@ -302,35 +319,56 @@ def _format_model_info(m: dict) -> str:
     return " — ".join(parts) if len(parts) > 1 else parts[0]
 
 
-def format_models_embed(data: dict) -> discord.Embed:
-    models = data.get("data", [])
+def format_models_embed(model_ids: list[str], configs: dict[str, dict]) -> discord.Embed:
     embed = discord.Embed(
         title="🤖 Available Models",
-        description=f"Found **{len(models)}** model(s) you have access to.",
+        description=f"Found **{len(model_ids)}** model(s) you have access to.",
         color=discord.Color.green(),
         timestamp=datetime.now(timezone.utc),
     )
 
     # Group models by provider prefix
-    provider_groups = {}
-    ungrouped = []
-    for m in models:
-        id_ = m.get("id", "unknown")
-        provider = _get_provider(id_)
-
+    provider_groups: dict[str, list[str]] = {}
+    ungrouped: list[str] = []
+    for mid in model_ids:
+        provider = _get_provider(mid)
         if provider:
-            provider_groups.setdefault(provider, []).append(m)
+            provider_groups.setdefault(provider, []).append(mid)
         else:
-            ungrouped.append(m)
+            ungrouped.append(mid)
+
+    def _lookup_info(model_id: str) -> dict:
+        """Resolve model info from configs using multiple lookup strategies."""
+        # Direct match
+        if model_id in configs:
+            return configs[model_id]
+        # Try without provider prefix (e.g. "openai/gpt-4" → "gpt-4")
+        if "/" in model_id:
+            base = model_id.split("/", 1)[1]
+            if base in configs:
+                return configs[base]
+        # Try with common prefixes
+        base = model_id.split("/", 1)[1] if "/" in model_id else model_id
+        for prefix in ("openai", "anthropic", "google", "azure", "bedrock", "vertex"):
+            aliased = f"{prefix}/{base}"
+            if aliased in configs:
+                return configs[aliased]
+        return {}
+
+    def _model_line(mid: str) -> str:
+        info = _lookup_info(mid)
+        if not info:
+            return f"`{mid}`"
+        return _format_model_line(mid, info)
 
     # Build detailed description by provider
     detailed_chunks = []
-    for provider, model_objs in sorted(provider_groups.items()):
-        lines = [_format_model_info(m) for m in model_objs]
-        detailed_chunks.append(f"**{provider}** ({len(model_objs)})\n" + "\n".join(lines))
+    for provider, ids in sorted(provider_groups.items()):
+        lines = [_model_line(mid) for mid in sorted(ids)]
+        detailed_chunks.append(f"**{provider}** ({len(ids)})\n" + "\n".join(lines))
 
     if ungrouped:
-        lines = [_format_model_info(m) for m in ungrouped]
+        lines = [_model_line(mid) for mid in sorted(ungrouped)]
         detailed_chunks.append(f"**Other** ({len(ungrouped)})\n" + "\n".join(lines))
 
     detailed_text = "\n\n".join(detailed_chunks)
@@ -338,16 +376,14 @@ def format_models_embed(data: dict) -> discord.Embed:
     # Discord embed field limit is 1024 chars; fall back to concise list if needed
     if len(detailed_text) > 980:
         concise_chunks = []
-        for provider, model_objs in sorted(provider_groups.items()):
-            model_ids = [m.get("id", "?") for m in model_objs]
-            concise_chunks.append(f"**{provider}** ({len(model_ids)})\n" + "\n".join(
-                f"• `{mid}`" for mid in sorted(model_ids)
+        for provider, ids in sorted(provider_groups.items()):
+            concise_chunks.append(f"**{provider}** ({len(ids)})\n" + "\n".join(
+                f"• `{mid}`" for mid in sorted(ids)
             ))
 
         if ungrouped:
-            model_ids = [m.get("id", "?") for m in ungrouped]
-            concise_chunks.append(f"**Other** ({len(model_ids)})\n" + "\n".join(
-                f"• `{mid}`" for mid in sorted(model_ids)
+            concise_chunks.append(f"**Other** ({len(ungrouped)})\n" + "\n".join(
+                f"• `{mid}`" for mid in sorted(ungrouped)
             ))
 
         concise_text = "\n\n".join(concise_chunks)
@@ -357,8 +393,8 @@ def format_models_embed(data: dict) -> discord.Embed:
         else:
             # Last resort: provider counts only
             summary_parts = []
-            for provider, model_objs in sorted(provider_groups.items()):
-                summary_parts.append(f"{provider}: {len(model_objs)}")
+            for provider, ids in sorted(provider_groups.items()):
+                summary_parts.append(f"{provider}: {len(ids)}")
             if ungrouped:
                 summary_parts.append(f"other: {len(ungrouped)}")
             summary = ", ".join(summary_parts[:10])
@@ -429,8 +465,13 @@ async def handle_models(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
     try:
-        data = await fetch_models(virtual_key)
-        embed = format_models_embed(data)
+        accessible = await fetch_accessible_models(virtual_key)
+        try:
+            configs = await fetch_model_configs()
+        except Exception:
+            # If admin endpoint fails, show models without detail
+            configs = {}
+        embed = format_models_embed(accessible, configs)
         embed.set_footer(text=f"Requested by {interaction.user}")
         await interaction.followup.send(embed=embed, ephemeral=True)
     except aiohttp.ClientResponseError as e:
@@ -593,8 +634,12 @@ class KeySetupModal(discord.ui.Modal, title="🔑 First-Time Setup — Enter Vir
                 "✅ Virtual key saved! Fetching available models ...", ephemeral=True
             )
             try:
-                data = await fetch_models(virtual_key)
-                embed = format_models_embed(data)
+                accessible = await fetch_accessible_models(virtual_key)
+                try:
+                    configs = await fetch_model_configs()
+                except Exception:
+                    configs = {}
+                embed = format_models_embed(accessible, configs)
                 embed.set_footer(text=f"Requested by {interaction.user}")
                 await interaction.followup.send(embed=embed, ephemeral=True)
             except aiohttp.ClientResponseError as e:
