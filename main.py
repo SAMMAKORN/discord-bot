@@ -203,6 +203,94 @@ def format_usage_embed(data: dict, usd_thb_rate: float = 0.0) -> discord.Embed:
     return embed
 
 
+def _get_provider(model_id: str) -> str | None:
+    """Extract provider prefix from a model ID (e.g., 'openai/gpt-4' → 'openai')."""
+    return model_id.split("/")[0] if "/" in model_id else None
+
+
+def _format_model_info(m: dict) -> str:
+    """Format a single model's token, cost, and capability details."""
+    id_ = m.get("id", "unknown")
+
+    # Try nested info/metadata first (LiteLLM /v1/models may include these)
+    info = m.get("info", {}) or m.get("metadata", {})
+    if not info and isinstance(m.get("root"), dict):
+        root = m["root"]
+        info = root.get("info", {}) or root.get("metadata", {})
+
+    # Fallback: read top-level keys directly
+    if not info:
+        info = {k: v for k, v in m.items()
+                if k not in ("id", "object", "created", "owned_by", "permission", "root")}
+
+    if not info:
+        return f"`{id_}`"
+
+    parts = [f"**`{id_}`**"]
+
+    # ── Token info ───────────────────────────────────────────────
+    context = (
+        info.get("max_input_tokens")
+        or info.get("max_tokens")
+        or info.get("max_tokens_request")
+        or info.get("max_position_embeddings")
+        or info.get("context_window")
+    )
+    if context:
+        parts.append(f"📏 Context: {int(context):,} tokens")
+
+    # ── Capabilities ─────────────────────────────────────────────
+    caps = []
+    # Vision / Image input
+    if info.get("supports_vision") or info.get("vision"):
+        caps.append("👁️ Vision")
+    elif "image" in [str(x).lower() for x in (info.get("input_modalities") or [])]:
+        caps.append("👁️ Vision")
+
+    # Function calling / Tool use
+    if info.get("supports_function_calling") or info.get("function_calling"):
+        caps.append("🔧 Functions")
+    elif info.get("supports_tool_use") or info.get("tool_use"):
+        caps.append("🔧 Tools")
+
+    # JSON mode
+    if info.get("supports_json_mode") or info.get("json_mode"):
+        caps.append("📋 JSON")
+
+    # Image generation
+    if info.get("supports_image_generation") or info.get("image_generation"):
+        caps.append("🎨 Image Gen")
+    elif "image" in [str(x).lower() for x in (info.get("output_modalities") or [])]:
+        caps.append("🎨 Image Gen")
+
+    # Modality summary (if no specific caps matched but modalities exist)
+    if not caps:
+        input_mod = [str(x).lower() for x in (info.get("input_modalities") or [])]
+        output_mod = [str(x).lower() for x in (info.get("output_modalities") or [])]
+        if input_mod or output_mod:
+            caps.append("↔ ".join(input_mod + output_mod))
+
+    if caps:
+        parts.append(" | ".join(caps))
+
+    # ── Cost info ────────────────────────────────────────────────
+    input_cost = (
+        info.get("input_cost_per_token")
+        or info.get("input_cost")
+        or info.get("input_cost_per_token_cache")
+    )
+    output_cost = (
+        info.get("output_cost_per_token")
+        or info.get("output_cost")
+    )
+    if input_cost is not None or output_cost is not None:
+        i_c = f"{float(input_cost or 0):.0f}" if input_cost else "—"
+        o_c = f"{float(output_cost or 0):.0f}" if output_cost else "—"
+        parts.append(f"💲 ${i_c} in / ${o_c} out (per M tokens)")
+
+    return " — ".join(parts) if len(parts) > 1 else parts[0]
+
+
 def format_models_embed(data: dict) -> discord.Embed:
     models = data.get("data", [])
     embed = discord.Embed(
@@ -217,41 +305,58 @@ def format_models_embed(data: dict) -> discord.Embed:
     ungrouped = []
     for m in models:
         id_ = m.get("id", "unknown")
-        # Extract provider prefix (e.g., "openai/gpt-4" → "openai")
-        if "/" in id_:
-            provider = id_.split("/")[0]
-        else:
-            provider = None
+        provider = _get_provider(id_)
 
         if provider:
-            provider_groups.setdefault(provider, [])
-            provider_groups[provider].append(id_)
+            provider_groups.setdefault(provider, []).append(m)
         else:
-            ungrouped.append(id_)
+            ungrouped.append(m)
 
-    # Build description by provider
-    chunks = []
-    for provider, model_ids in sorted(provider_groups.items()):
-        models_text = "\n".join(f"• `{m}`" for m in sorted(model_ids))
-        chunks.append(f"**{provider}** ({len(model_ids)})\n{models_text}")
+    # Build detailed description by provider
+    detailed_chunks = []
+    for provider, model_objs in sorted(provider_groups.items()):
+        lines = [_format_model_info(m) for m in model_objs]
+        detailed_chunks.append(f"**{provider}** ({len(model_objs)})\n" + "\n".join(lines))
 
     if ungrouped:
-        models_text = "\n".join(f"• `{m}`" for m in sorted(ungrouped))
-        chunks.append(f"**Other** ({len(ungrouped)})\n{models_text}")
+        lines = [_format_model_info(m) for m in ungrouped]
+        detailed_chunks.append(f"**Other** ({len(ungrouped)})\n" + "\n".join(lines))
 
-    # Discord embed description limit is 1024 chars; split if needed
-    full_text = "\n\n".join(chunks)
-    if len(full_text) > 1000:
-        # Fallback: show count only with top providers
-        summary_parts = []
-        for provider, model_ids in sorted(provider_groups.items()):
-            summary_parts.append(f"{provider}: {len(model_ids)}")
+    detailed_text = "\n\n".join(detailed_chunks)
+
+    # Discord embed field limit is 1024 chars; fall back to concise list if needed
+    if len(detailed_text) > 980:
+        concise_chunks = []
+        for provider, model_objs in sorted(provider_groups.items()):
+            model_ids = [m.get("id", "?") for m in model_objs]
+            lines = [_format_model_info(m) for m in model_objs]
+            concise_chunks.append(f"**{provider}** ({len(model_ids)})\n" + "\n".join(
+                f"• `{mid}`" for mid in sorted(model_ids)
+            ))
+
         if ungrouped:
-            summary_parts.append(f"other: {len(ungrouped)}")
-        summary = ", ".join(summary_parts[:10])
-        if len(summary_parts) > 10:
-            summary += " ..."
-        full_text = f"⚠️ Too many models to display.\n{summary}"
+            model_ids = [m.get("id", "?") for m in ungrouped]
+            concise_chunks.append(f"**Other** ({len(model_ids)})\n" + "\n".join(
+                f"• `{mid}`" for mid in sorted(model_ids)
+            ))
+
+        concise_text = "\n\n".join(concise_chunks)
+
+        if len(concise_text) <= 1000:
+            full_text = concise_text
+        else:
+            # Last resort: provider counts only
+            summary_parts = []
+            for provider, model_objs in sorted(provider_groups.items()):
+                summary_parts.append(f"{provider}: {len(model_objs)}")
+            if ungrouped:
+                summary_parts.append(f"other: {len(ungrouped)}")
+            summary = ", ".join(summary_parts[:10])
+            if len(summary_parts) > 10:
+                summary += " ..."
+            full_text = f"⚠️ Too many models to display.\n{summary}"
+    else:
+        full_text = detailed_text
 
     embed.add_field(name="Models", value=full_text, inline=False)
     return embed

@@ -57,7 +57,7 @@ All responses are **ephemeral** (only visible to the user who invoked the comman
 | -------------- | ------------------------------------------------------------------------ |
 | `/help`        | Show all available commands with interactive buttons                     |
 | `/usage`       | View your LiteLLM usage stats (first time: prompts for your virtual key) |
-| `/models`      | List all models you have access to (first time: prompts for your virtual key) |
+| `/models`      | List all models with token limits, costs, and capabilities (first time: prompts for your virtual key) |
 | `/reset-key`   | Replace your registered virtual key                                      |
 | `/delete-key`  | Delete your virtual key and all data from the bot                        |
 
@@ -76,7 +76,15 @@ The `/help` command displays an embed listing all available commands, along with
 
 ## `/models` Command
 
-The `/models` command displays the models accessible with your virtual key, grouped by provider (e.g., `openai`, `anthropic`, `google`). If the list is too long for a single embed, it shows a summary with model counts per provider.
+The `/models` command displays the models accessible with your virtual key, grouped by provider (e.g., `openai`, `anthropic`, `google`). For each model it shows:
+
+- **📏 Context Window** — Maximum token count
+- **Capabilities** — 👁️ Vision, 🔧 Function Calling, 📋 JSON Mode, 🎨 Image Generation
+- **💲 Cost** — Input and output price per million tokens
+
+If the list is too long for a single embed, it falls back to a concise list grouped by provider, and further to a provider-count summary if still too long.
+
+> **Note:** The detail shown depends on what metadata your LiteLLM proxy returns via the `/v1/models` endpoint. Not all providers include cost or capability data.
 
 ## Embed Fields
 
