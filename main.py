@@ -208,6 +208,15 @@ def _get_provider(model_id: str) -> str | None:
     return model_id.split("/")[0] if "/" in model_id else None
 
 
+# Emoji mapping for modality labels (avoid recreating dict on every call)
+_MOD_ICONS: dict[str, str] = {
+    "text": "📝",
+    "image": "🖼️",
+    "audio": "🔊",
+    "video": "🎬",
+}
+
+
 def _format_model_info(m: dict) -> str:
     """Format a single model's token, cost, and capability details."""
     id_ = m.get("id", "unknown")
@@ -268,12 +277,14 @@ def _format_model_info(m: dict) -> str:
         input_mod = [str(x).lower() for x in (info.get("input_modalities") or [])]
         output_mod = [str(x).lower() for x in (info.get("output_modalities") or [])]
         if input_mod or output_mod:
-            caps.append("↔ ".join(input_mod + output_mod))
+            labeled = [_MOD_ICONS.get(m, "🔹") + " " + m.title() for m in input_mod + output_mod]
+            caps.append(" ↔ ".join(labeled))
 
     if caps:
         parts.append(" | ".join(caps))
 
     # ── Cost info ────────────────────────────────────────────────
+    # LiteLLM / OpenAI costs are per-token; multiply by 1 M to show per-million.
     input_cost = (
         info.get("input_cost_per_token")
         or info.get("input_cost")
@@ -284,8 +295,8 @@ def _format_model_info(m: dict) -> str:
         or info.get("output_cost")
     )
     if input_cost is not None or output_cost is not None:
-        i_c = f"{float(input_cost or 0):.0f}" if input_cost else "—"
-        o_c = f"{float(output_cost or 0):.0f}" if output_cost else "—"
+        i_c = f"{float(input_cost) * 1_000_000:,.2f}" if input_cost else "—"
+        o_c = f"{float(output_cost) * 1_000_000:,.2f}" if output_cost else "—"
         parts.append(f"💲 ${i_c} in / ${o_c} out (per M tokens)")
 
     return " — ".join(parts) if len(parts) > 1 else parts[0]
@@ -329,7 +340,6 @@ def format_models_embed(data: dict) -> discord.Embed:
         concise_chunks = []
         for provider, model_objs in sorted(provider_groups.items()):
             model_ids = [m.get("id", "?") for m in model_objs]
-            lines = [_format_model_info(m) for m in model_objs]
             concise_chunks.append(f"**{provider}** ({len(model_ids)})\n" + "\n".join(
                 f"• `{mid}`" for mid in sorted(model_ids)
             ))
