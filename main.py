@@ -116,9 +116,16 @@ async def fetch_accessible_models(virtual_key: str) -> list[str]:
 
 
 async def fetch_model_configs() -> dict[str, dict]:
-    """Fetch all model configs from LiteLLM admin endpoint (needs master key).
+    """Fetch all model configs from LiteLLM admin /models endpoint (needs master key).
 
     Returns a dict mapping model_name → model_info (cost, tokens, capabilities, …).
+
+    The admin /models endpoint returns a list of dicts with keys like:
+      - model_name: may be "*gpt-4", "openai/gpt-4", "gpt-4", or "*"
+      - model_info: dict of cost/token/capability fields
+      - litellm_params: dict of LiteLLM-specific params
+    We normalize the name (strip leading *@, trim whitespace) and also index
+    by provider-prefixed variants so lookups from /v1/models IDs work.
     """
     url = f"{LITELLM_BASE_URL}/models"
     async with aiohttp.ClientSession() as session:
@@ -132,17 +139,38 @@ async def fetch_model_configs() -> dict[str, dict]:
 
     # Build lookup: every known name variant → model_info
     lookup: dict[str, dict] = {}
+    providers = ("openai", "anthropic", "google", "azure", "bedrock", "vertex",
+                 "nvidia", "qwen", "mistral", "cohere", "groq", "huggingface")
+
     for entry in configs:
-        info = entry.get("model_info", {})
+        # model_info may be nested under model_info or litellm_params
+        info = entry.get("model_info") or entry.get("litellm_params") or {}
         name = entry.get("model_name", "")
-        if name and info:
-            lookup[name] = info
-            # Also index by common prefixes (openai/gpt-4 → gpt-4)
-            for prefix in ("openai", "anthropic", "google", "azure", "bedrock", "vertex"):
-                aliased = f"{prefix}/{name}"
+        if not name:
+            continue
+
+        # Normalize: strip leading * or @ (wildcard / provider prefix marker)
+        norm = name.strip().lstrip("*@").strip("/")
+        if not norm:
+            continue
+
+        # If the name already contains a slash (e.g. "openai/gpt-4"),
+        # use it as-is; otherwise store the normalized basename.
+        if "/" in norm:
+            lookup[norm] = info
+            # Also index the basename without provider
+            base = norm.split("/", 1)[1]
+            lookup[base] = info
+        else:
+            lookup[norm] = info
+            # Index with every provider prefix
+            for prefix in providers:
+                aliased = f"{prefix}/{norm}"
                 if aliased not in lookup:
                     lookup[aliased] = info
 
+    print(f"[models] Loaded {len(lookup)} model config entries "
+          f"(from {len(configs)} admin entries)")
     return lookup
 
 
@@ -349,7 +377,8 @@ def format_models_embed(model_ids: list[str], configs: dict[str, dict]) -> disco
                 return configs[base]
         # Try with common prefixes
         base = model_id.split("/", 1)[1] if "/" in model_id else model_id
-        for prefix in ("openai", "anthropic", "google", "azure", "bedrock", "vertex"):
+        for prefix in ("openai", "anthropic", "google", "azure", "bedrock", "vertex",
+                       "nvidia", "qwen", "mistral", "cohere", "groq"):
             aliased = f"{prefix}/{base}"
             if aliased in configs:
                 return configs[aliased]
@@ -468,8 +497,13 @@ async def handle_models(interaction: discord.Interaction):
         accessible = await fetch_accessible_models(virtual_key)
         try:
             configs = await fetch_model_configs()
-        except Exception:
+            matched = sum(1 for m in accessible if m in configs or
+                          (m.split("/")[1] if "/" in m else m) in configs)
+            print(f"[models] User has access to {len(accessible)} models, "
+                  f"{matched} have config data")
+        except Exception as e:
             # If admin endpoint fails, show models without detail
+            print(f"[models] Failed to fetch model configs: {type(e).__name__}: {e}")
             configs = {}
         embed = format_models_embed(accessible, configs)
         embed.set_footer(text=f"Requested by {interaction.user}")
