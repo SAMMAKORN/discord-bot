@@ -109,10 +109,16 @@ The `/usage` command displays a rich embed with the following fields:
 
 ## How It Works
 
-1. **First run** — User types `/usage` or `/models` → bot opens a modal asking for their virtual key → key is saved to SQLite (`bot.db`) → data is fetched and displayed as a rich embed.
-2. **Subsequent runs** — `/usage` or `/models` looks up the stored key and fetches data immediately.
+1. **First run** — User types `/usage` or `/models` → bot opens a modal asking for their virtual key → key is **encrypted with Fernet** and saved to SQLite → data is fetched and displayed as a rich embed.
+2. **Subsequent runs** — `/usage` or `/models` looks up the stored key, **decrypts it**, and fetches data immediately.
 3. **`/reset-key`** — Opens a modal to replace the stored virtual key.
 4. **`/delete-key`** — Permanently deletes the user's virtual key and all associated data from the bot's database.
+
+## Security
+
+- **Encrypted at rest** — Virtual keys are encrypted with Fernet (AES-128-CBC) before being written to SQLite. Decrypted only in memory when needed.
+- **`ENCRYPTION_KEY`** — For production (multi-instance), set this env var to a fixed Fernet key. For dev, a key is auto-generated per instance.
+- **Ephemeral responses** — All command responses are visible only to the user who invoked them.
 
 ## Connection to Discord
 
