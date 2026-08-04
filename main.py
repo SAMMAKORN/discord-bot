@@ -19,11 +19,12 @@ LITELLM_BASE_URL = os.getenv("LITELLM_BASE_URL", "https://litellm.sam.co.th")
 DB_PATH = os.getenv("DB_PATH", "/app/data/bot.db")
 
 # ── Database ─────────────────────────────────────────────────────
-def get_db():
+def get_db() -> sqlite3.Connection:
+    """Return a new SQLite connection with Row factory enabled."""
     db_path = Path(DB_PATH)
 
-    # SQLite สร้างไฟล์ฐานข้อมูลได้
-    # แต่จะไม่สร้างโฟลเดอร์แม่ให้
+    # SQLite can create the database file
+    # but won't create the parent directory
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(str(db_path))
@@ -32,6 +33,7 @@ def get_db():
 
 
 def init_db():
+    """Create the users table if it does not already exist."""
     conn = get_db()
     conn.execute(
         """
@@ -47,7 +49,8 @@ def init_db():
     conn.close()
 
 
-def get_user_key(user_id: str):
+def get_user_key(user_id: str) -> str | None:
+    """Return the stored virtual key for *user_id*, or ``None``."""
     conn = get_db()
     row = conn.execute(
         "SELECT virtual_key FROM users WHERE user_id = ?", (user_id,)
@@ -57,6 +60,7 @@ def get_user_key(user_id: str):
 
 
 def save_user_key(user_id: str, virtual_key: str):
+    """Insert or update the virtual key for *user_id*."""
     now = datetime.now(timezone.utc).isoformat()
     conn = get_db()
     conn.execute(
@@ -71,6 +75,7 @@ def save_user_key(user_id: str, virtual_key: str):
 
 
 def delete_user_key(user_id: str) -> bool:
+    """Delete the user's virtual key; return ``True`` if a row was removed."""
     conn = get_db()
     cursor = conn.execute(
         "DELETE FROM users WHERE user_id = ?", (user_id,)
@@ -86,6 +91,7 @@ _HTTP_TIMEOUT = aiohttp.ClientTimeout(total=30)
 
 
 async def fetch_usage(virtual_key: str) -> dict:
+    """GET /key/info — returns key metadata and spend."""
     url = f"{LITELLM_BASE_URL}/key/info"
     async with aiohttp.ClientSession() as session:
         async with session.get(
@@ -98,32 +104,8 @@ async def fetch_usage(virtual_key: str) -> dict:
             return await resp.json()
 
 
-async def fetch_today_token_usage(virtual_key: str) -> dict:
-    """Fetch today's token usage from LiteLLM reporting endpoint.
-
-    Returns an empty dict if the reporting endpoint is unavailable
-    (e.g., the proxy has no database backend configured).
-    """
-    today = datetime.now(ZoneInfo("Asia/Bangkok")).strftime("%Y-%m-%d")
-    url = f"{LITELLM_BASE_URL}/v2/user_accounting/reporting"
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            url,
-            json={
-                "start_date": f"{today}T00:00:00Z",
-                "end_date": f"{today}T23:59:59Z",
-                "filters": {"keys": [virtual_key]},
-            },
-            headers={"Authorization": f"Bearer {MASTER_KEY}"},
-            timeout=_HTTP_TIMEOUT,
-        ) as resp:
-            if resp.status == 404:
-                return {}
-            resp.raise_for_status()
-            return await resp.json()
-
-
 async def fetch_models(virtual_key: str) -> dict:
+    """GET /v1/models — returns accessible model list."""
     url = f"{LITELLM_BASE_URL}/v1/models"
     async with aiohttp.ClientSession() as session:
         async with session.get(
@@ -147,111 +129,184 @@ async def fetch_usd_thb_rate() -> float:
 
 
 def _truncate_key(key: str) -> str:
+    """Mask the leading characters of *key*, keeping only the last 8."""
     return f"****{key[-8:]}" if len(key) > 8 else key
 
 
-def format_token_usage_embed(data: dict, today_data: dict) -> discord.Embed:
-    """Format token usage stats from LiteLLM key info response."""
-    info = (data or {}).get("info") or {}
+# ── Team API helpers ─────────────────────────────────────────────
+async def fetch_team_list() -> list[dict]:
+    """GET /team/list — returns all teams managed by the proxy."""
+    url = f"{LITELLM_BASE_URL}/team/list"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            url,
+            headers={"Authorization": f"Bearer {MASTER_KEY}"},
+            timeout=_HTTP_TIMEOUT,
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            return data if isinstance(data, list) else data.get("data", [])
 
-    # All-time token counts from LiteLLM key info
-    tokens_in = info.get("tokens_in") or 0
-    tokens_out = info.get("tokens_out") or 0
-    total_tokens = tokens_in + tokens_out
-    has_token_fields = "tokens_in" in info or "tokens_out" in info
 
-    # Request count
-    request_count = info.get("request_count", 0) or 0
+async def fetch_team_daily_activity(team_id: str) -> dict:
+    """GET /team/daily/activity — today only."""
+    today = datetime.now(ZoneInfo("Asia/Bangkok")).strftime("%Y-%m-%d")
+    url = f"{LITELLM_BASE_URL}/team/daily/activity"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            url,
+            params={"team_id": team_id, "start_date": today, "end_date": today, "page": 1},
+            headers={"Authorization": f"Bearer {MASTER_KEY}"},
+            timeout=_HTTP_TIMEOUT,
+        ) as resp:
+            resp.raise_for_status()
+            return await resp.json()
 
-    # Key metadata
-    key = (data or {}).get("key", "N/A")
-    key_name = info.get("key_name", "N/A")
-    models = info.get("models", []) or []
-    models_str = ", ".join(models) if models else "All models"
 
-    # Today's token counts from reporting endpoint
-    today_in = 0
-    today_out = 0
-    today_total = 0
-    today_requests = 0
-    today_rows = (today_data or {}).get("data", []) or []
-    if today_rows:
-        today_in = sum(row.get("tokens_in", 0) or 0 for row in today_rows)
-        today_out = sum(row.get("tokens_out", 0) or 0 for row in today_rows)
-        today_total = today_in + today_out
-        today_requests = len(today_rows)
+def _extract_key_metrics(results: list[dict], key_alias: str) -> tuple[dict, bool]:
+    """Sum metrics for a specific key_alias across results.
+
+    Returns (totals_dict, was_found) where was_found is True if at least one
+    entry matched the alias (exact or suffix fallback).
+    """
+    totals = {
+        "spend": 0.0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "successful_requests": 0,
+        "failed_requests": 0,
+        "api_requests": 0,
+    }
+    found = False
+    alias_suffix = key_alias[-8:] if len(key_alias) > 8 else key_alias
+    for day in results:
+        api_keys = day.get("breakdown", {}).get("api_keys", {})
+        for _khash, kinfo in api_keys.items():
+            remote_alias = (kinfo.get("metadata", {}).get("key_alias") or "")
+            # Exact match first, then suffix fallback
+            if remote_alias == key_alias or remote_alias.endswith(alias_suffix):
+                m = kinfo.get("metrics", {})
+                for k, v in m.items():
+                    if k in totals and isinstance(v, (int, float)):
+                        totals[k] += v
+                found = True
+                break
+    return totals, found
+
+
+def _find_team_for_key(team_list: list[dict], virtual_key: str) -> dict | None:
+    key_alias = virtual_key[-8:] if len(virtual_key) > 8 else virtual_key
+    for team in team_list:
+        for key_info in (team.get("keys") or []):
+            token = key_info.get("token", "")
+            if token.endswith(key_alias):
+                return {
+                    "team_alias": team.get("team_alias", "Unknown"),
+                    "team_id": team.get("team_id", ""),
+                    "key_alias": key_info.get("key_alias", "Unknown"),
+                }
+    return None
+
+
+def _resolve_team_info(team_list: list[dict], key_info: dict) -> dict | None:
+    info = (key_info or {}).get("info", {}) or {}
+    team_id = info.get("team_id")
+    if team_id:
+        for team in team_list:
+            if team.get("team_id") == team_id:
+                ka = info.get("key_alias") or info.get("key_name", "Unknown")
+                return {
+                    "team_alias": team.get("team_alias", "Unknown"),
+                    "team_id": team_id,
+                    "key_alias": ka,
+                }
+        return {
+            "team_alias": "Unknown",
+            "team_id": team_id,
+            "key_alias": info.get("key_alias") or info.get("key_name", "Unknown"),
+        }
+    virtual_key = (key_info or {}).get("key", "")
+    return _find_team_for_key(team_list, virtual_key)
+
+
+def format_token_usage_embed(team_info: dict, activity: dict) -> discord.Embed:
+    """Format today's token usage stats for the user's key."""
+    team_alias = team_info.get("team_alias", "Unknown")
+    key_alias = team_info.get("key_alias", "Unknown")
+
+    results = activity.get("results", [])
+    key_metrics, key_found = _extract_key_metrics(results, key_alias)
+
+    total_requests = key_metrics["api_requests"]
+    total_successful = key_metrics["successful_requests"]
+    total_failed = key_metrics["failed_requests"]
+    total_tokens = key_metrics["total_tokens"]
+    total_spend = key_metrics["spend"]
+
+    avg_tokens = total_tokens // total_requests if total_requests > 0 else 0
+    avg_spend = total_spend / total_requests if total_requests > 0 else 0.0
 
     now_bkk = datetime.now(ZoneInfo("Asia/Bangkok"))
-    today_str = now_bkk.strftime("%b %d, %Y")
+    today_str = now_bkk.strftime("%Y-%m-%d")
+
+    color = discord.Color.blurple() if key_found else discord.Color.dark_gold()
 
     embed = discord.Embed(
-        title="🪙 Token Usage Report",
-        color=discord.Color.gold(),
+        title=f"{key_alias} (team: {team_alias})",
+        color=color,
         timestamp=datetime.now(timezone.utc),
     )
-    embed.set_author(name=key_name)
-    embed.add_field(name="🔑 Virtual Key", value=f"```{_truncate_key(key)}```", inline=True)
 
-    # ── All-time section ──
-    embed.add_field(name="⏱️ **All-Time**", value="​", inline=False)
+    # Summary Row
     embed.add_field(
-        name="📥 Input Tokens",
-        value=f"```{f'{tokens_in:,}':>15}```",
+        name="\U0001f4ca **Total Requests**",
+        value=f"`{total_requests:,}`\n",
         inline=True,
     )
     embed.add_field(
-        name="📤 Output Tokens",
-        value=f"```{f'{tokens_out:,}':>15}```",
+        name="\U0001f999 **Total Tokens**",
+        value=f"`{total_tokens:,}`\n",
         inline=True,
     )
     embed.add_field(
-        name="📊 Total Tokens",
-        value=f"```{f'{total_tokens:,}':>15}```",
-        inline=True,
-    )
-    embed.add_field(
-        name="🔢 Requests",
-        value=f"```{f'{request_count:,}':>15}```",
+        name="\U0001f4b0 **Total Spend**",
+        value=f"`${total_spend:,.2f}`\n",
         inline=True,
     )
 
-    # ── Today section ──
-    embed.add_field(name=f"📅 **Today ({today_str}) — Bangkok Time**", value="​", inline=False)
+    # Breakdown Row
     embed.add_field(
-        name="📥 Input Tokens",
-        value=f"```{f'{today_in:,}':>15}```",
+        name="\u2705 **Successful**",
+        value=f"`{total_successful:,}`",
         inline=True,
     )
     embed.add_field(
-        name="📤 Output Tokens",
-        value=f"```{f'{today_out:,}':>15}```",
+        name="\u274c **Failed**",
+        value=f"`{total_failed:,}`",
         inline=True,
     )
     embed.add_field(
-        name="📊 Total Tokens",
-        value=f"```{f'{today_total:,}':>15}```",
-        inline=True,
-    )
-    embed.add_field(
-        name="🔢 Requests",
-        value=f"```{f'{today_requests:,}':>15}```",
+        name="\u26a1 **Avg/request**",
+        value=f"`{avg_tokens:,}` tok\n`${avg_spend:,.4f}`",
         inline=True,
     )
 
-    # Token data availability note
-    if not has_token_fields and request_count > 0:
+    if not key_found and not results:
         embed.add_field(
-            name="⚠️ Note",
-            value="Token data not available from the API. Request counts are reported.",
+            name="\u26a0\ufe0f Note",
+            value="No activity data found for today. The dashboard will show zeroes.",
+            inline=False,
+        )
+    elif not key_found:
+        embed.add_field(
+            name="\u26a0\ufe0f Note",
+            value="Could not find your key in today's activity. "
+            "Your key alias may differ from the team record.",
             inline=False,
         )
 
-    models_display = models_str if len(models_str) <= 100 else f"{models_str[:97]}..."
-    embed.add_field(
-        name="🤖 Models Used",
-        value=models_display,
-        inline=False,
-    )
+    embed.set_footer(text=f"\U0001f4c5 Today \u2014 {today_str} (Bangkok)")
 
     return embed
 
@@ -264,7 +319,6 @@ def format_usage_embed(data: dict, usd_thb_rate: float = 0.0) -> discord.Embed:
     spend = info.get("spend", 0.0)
     models = info.get("models", [])
     expires = info.get("expires", "N/A")
-    aliases = info.get("aliases", {})
     config = info.get("config", {})
     max_budget = info.get("max_budget", None)
     key_name = info.get("key_name", "N/A")
@@ -404,6 +458,66 @@ async def safe_send_modal(interaction: discord.Interaction, modal: discord.ui.Mo
         await interaction.response.send_modal(modal)
 
 
+# ── Shared follow-up helpers ─────────────────────────────────────
+async def _send_usage_followup(interaction: discord.Interaction, virtual_key: str):
+    """Fetch usage data and send it as a follow-up embed."""
+    try:
+        data = await fetch_usage(virtual_key)
+        rate = await fetch_usd_thb_rate()
+        embed = format_usage_embed(data, rate)
+        embed.set_footer(text=f"Requested by {interaction.user}")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except aiohttp.ClientResponseError as e:
+        await interaction.followup.send(_error_message(e.status, "usage data"), ephemeral=True)
+    except Exception:
+        await interaction.followup.send(
+            "❌ Something went wrong. Please try again later.", ephemeral=True
+        )
+
+
+async def _send_models_followup(interaction: discord.Interaction, virtual_key: str):
+    """Fetch available models and send them as a follow-up embed."""
+    try:
+        data = await fetch_models(virtual_key)
+        embed = format_models_embed(data)
+        embed.set_footer(text=f"Requested by {interaction.user}")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except aiohttp.ClientResponseError as e:
+        await interaction.followup.send(_error_message(e.status, "models"), ephemeral=True)
+    except Exception:
+        await interaction.followup.send(
+            "❌ Something went wrong. Please try again later.", ephemeral=True
+        )
+
+
+async def _send_usage_daily_followup(interaction: discord.Interaction, virtual_key: str):
+    """Fetch today's usage dashboard and send it as a follow-up embed."""
+    try:
+        key_data, team_list = await asyncio.gather(
+            fetch_usage(virtual_key),
+            fetch_team_list(),
+        )
+        team_info = _resolve_team_info(team_list, key_data)
+        if team_info is None or not team_info["team_id"]:
+            await interaction.followup.send(
+                "❌ Could not find your team.", ephemeral=True,
+            )
+            return
+
+        activity = await fetch_team_daily_activity(team_info["team_id"])
+        embed = format_token_usage_embed(team_info, activity)
+        embed.set_footer(text=f"Requested by {interaction.user}")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except aiohttp.ClientResponseError as e:
+        await interaction.followup.send(
+            _error_message(e.status, "team usage data"), ephemeral=True
+        )
+    except Exception:
+        await interaction.followup.send(
+            "❌ Something went wrong. Please try again later.", ephemeral=True
+        )
+
+
 # ── Command handlers (shared by slash commands and buttons) ──────
 async def handle_usage(interaction: discord.Interaction):
     """Core logic for /usage — callable from slash command or button."""
@@ -416,19 +530,7 @@ async def handle_usage(interaction: discord.Interaction):
 
     if not interaction.response.is_done():
         await interaction.response.defer(ephemeral=True)
-
-    try:
-        data = await fetch_usage(virtual_key)
-        rate = await fetch_usd_thb_rate()
-        embed = format_usage_embed(data, rate)
-        embed.set_footer(text=f"Requested by {interaction.user}")
-        await interaction.followup.send(embed=embed, ephemeral=True)
-    except aiohttp.ClientResponseError as e:
-        await interaction.followup.send(_error_message(e.status, "usage data"), ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(
-            f"❌ Unexpected error: `{type(e).__name__}`", ephemeral=True
-        )
+    await _send_usage_followup(interaction, virtual_key)
 
 
 async def handle_models(interaction: discord.Interaction):
@@ -442,46 +544,21 @@ async def handle_models(interaction: discord.Interaction):
 
     if not interaction.response.is_done():
         await interaction.response.defer(ephemeral=True)
-
-    try:
-        data = await fetch_models(virtual_key)
-        embed = format_models_embed(data)
-        embed.set_footer(text=f"Requested by {interaction.user}")
-        await interaction.followup.send(embed=embed, ephemeral=True)
-    except aiohttp.ClientResponseError as e:
-        await interaction.followup.send(_error_message(e.status, "models"), ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(
-            f"❌ Unexpected error: `{type(e).__name__}`", ephemeral=True
-        )
+    await _send_models_followup(interaction, virtual_key)
 
 
-async def handle_usage_token(interaction: discord.Interaction):
-    """Core logic for /usage-token — shows token usage stats."""
+async def handle_usage_daily(interaction: discord.Interaction):
+    """Core logic for /usage-daily — today's usage dashboard via /team/daily/activity."""
     user_id = str(interaction.user.id)
     virtual_key = get_user_key(user_id)
 
     if virtual_key is None:
-        await safe_send_modal(interaction, KeySetupModal(action="usage-token"))
+        await safe_send_modal(interaction, KeySetupModal(action="usage-daily"))
         return
 
     if not interaction.response.is_done():
         await interaction.response.defer(ephemeral=True)
-
-    try:
-        data, today_data = await asyncio.gather(
-            fetch_usage(virtual_key),
-            fetch_today_token_usage(virtual_key),
-        )
-        embed = format_token_usage_embed(data, today_data)
-        embed.set_footer(text=f"Requested by {interaction.user}")
-        await interaction.followup.send(embed=embed, ephemeral=True)
-    except aiohttp.ClientResponseError as e:
-        await interaction.followup.send(_error_message(e.status, "token usage data"), ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(
-            f"❌ Unexpected error: `{type(e).__name__}`", ephemeral=True
-        )
+    await _send_usage_daily_followup(interaction, virtual_key)
 
 
 async def handle_reset_key(interaction: discord.Interaction):
@@ -508,10 +585,12 @@ async def handle_delete_key(interaction: discord.Interaction):
         await safe_send(interaction, content=msg, ephemeral=True)
         return
 
-    # Show confirmation buttons
-    await safe_send(interaction,
-                    content="⚠️ **Are you sure?** This will permanently delete your virtual key and all data.",
-                    view=DeleteConfirmView(user_id), ephemeral=True)
+    await safe_send(
+        interaction,
+        content="⚠️ **Are you sure?** This will permanently delete your virtual key and all data.",
+        view=DeleteConfirmView(user_id),
+        ephemeral=True,
+    )
 
 
 # ── Buttons / Views ──────────────────────────────────────────────
@@ -551,20 +630,20 @@ class DeleteKeyButton(discord.ui.Button):
         await handle_delete_key(interaction)
 
 
-class UsageTokenButton(discord.ui.Button):
+class UsageDailyButton(discord.ui.Button):
     def __init__(self):
-        super().__init__(label="Token Usage", style=discord.ButtonStyle.primary,
-                         custom_id="help_usage_token", emoji="🪙", row=0)
+        super().__init__(label="Daily Usage", style=discord.ButtonStyle.primary,
+                         custom_id="help_usage_daily", emoji="🪙", row=0)
 
     async def callback(self, interaction: discord.Interaction):
-        await handle_usage_token(interaction)
+        await handle_usage_daily(interaction)
 
 
 class HelpView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=120)
         self.add_item(UsageButton())
-        self.add_item(UsageTokenButton())
+        self.add_item(UsageDailyButton())
         self.add_item(ModelsButton())
         self.add_item(ResetKeyButton())
         self.add_item(DeleteKeyButton())
@@ -623,61 +702,20 @@ class KeySetupModal(discord.ui.Modal, title="🔑 First-Time Setup — Enter Vir
         virtual_key = self.key_input.value
         save_user_key(user_id, virtual_key)
 
+        messages = {
+            "usage": "✅ Virtual key saved! Fetching usage data ...",
+            "usage-daily": "✅ Virtual key saved! Fetching usage data ...",
+        }
+        status_msg = messages.get(self._action,
+                                  "✅ Virtual key saved! Fetching available models ...")
+        await interaction.response.send_message(content=status_msg, ephemeral=True)
+
         if self._action == "usage":
-            await interaction.response.send_message(
-                "✅ Virtual key saved! Fetching usage data ...", ephemeral=True
-            )
-            try:
-                data = await fetch_usage(virtual_key)
-                rate = await fetch_usd_thb_rate()
-                embed = format_usage_embed(data, rate)
-                embed.set_footer(text=f"Requested by {interaction.user}")
-                await interaction.followup.send(embed=embed, ephemeral=True)
-            except aiohttp.ClientResponseError as e:
-                await interaction.followup.send(
-                    _error_message(e.status, "usage data"), ephemeral=True
-                )
-            except Exception as e:
-                await interaction.followup.send(
-                    f"❌ Unexpected error: `{type(e).__name__}`", ephemeral=True
-                )
-        elif self._action == "usage-token":
-            await interaction.response.send_message(
-                "✅ Virtual key saved! Fetching token usage data ...", ephemeral=True
-            )
-            try:
-                data, today_data = await asyncio.gather(
-                    fetch_usage(virtual_key),
-                    fetch_today_token_usage(virtual_key),
-                )
-                embed = format_token_usage_embed(data, today_data)
-                embed.set_footer(text=f"Requested by {interaction.user}")
-                await interaction.followup.send(embed=embed, ephemeral=True)
-            except aiohttp.ClientResponseError as e:
-                await interaction.followup.send(
-                    _error_message(e.status, "token usage data"), ephemeral=True
-                )
-            except Exception as e:
-                await interaction.followup.send(
-                    f"❌ Unexpected error: `{type(e).__name__}`", ephemeral=True
-                )
+            await _send_usage_followup(interaction, virtual_key)
+        elif self._action == "usage-daily":
+            await _send_usage_daily_followup(interaction, virtual_key)
         else:
-            await interaction.response.send_message(
-                "✅ Virtual key saved! Fetching available models ...", ephemeral=True
-            )
-            try:
-                data = await fetch_models(virtual_key)
-                embed = format_models_embed(data)
-                embed.set_footer(text=f"Requested by {interaction.user}")
-                await interaction.followup.send(embed=embed, ephemeral=True)
-            except aiohttp.ClientResponseError as e:
-                await interaction.followup.send(
-                    _error_message(e.status, "models"), ephemeral=True
-                )
-            except Exception as e:
-                await interaction.followup.send(
-                    f"❌ Unexpected error: `{type(e).__name__}`", ephemeral=True
-                )
+            await _send_models_followup(interaction, virtual_key)
 
 
 class ResetKeyModal(discord.ui.Modal, title="🔑 Reset Virtual Key"):
@@ -765,11 +803,11 @@ async def delete_key(interaction: discord.Interaction):
 
 
 @bot.tree.command(
-    name="usage-token",
-    description="Check your token usage statistics (input, output, total)",
+    name="usage-daily",
+    description="Check today's usage dashboard (spend, tokens, requests)",
 )
-async def usage_token(interaction: discord.Interaction):
-    await handle_usage_token(interaction)
+async def usage_daily(interaction: discord.Interaction):
+    await handle_usage_daily(interaction)
 
 
 # ── /help ────────────────────────────────────────────────────────
@@ -796,8 +834,8 @@ async def help_command(interaction: discord.Interaction):
         inline=False,
     )
     embed.add_field(
-        name="`/usage-token`",
-        value="🪙 Check your token usage (input tokens, output tokens, total tokens, requests)",
+        name="`/usage-daily`",
+        value="🪙 Check today's usage dashboard (spend, tokens, requests)",
         inline=False,
     )
     embed.add_field(

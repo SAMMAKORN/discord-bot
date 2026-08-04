@@ -55,6 +55,20 @@ python main.py
 
 ## Changelog
 
+## v1.3.0 — Team API Migration, Key Alias Suffix Matching, and Robustness
+
+### Changed
+- **Renamed `/usage-token` to `/usage-daily`** — the command now uses the team API (`/team/list` + `/team/daily/activity`) to display today's usage dashboard (total requests, tokens, spend, successful/failed breakdown, per-request averages) instead of showing all-time token consumption.
+- Help command and button labels updated to reflect the new command name ("Daily Usage").
+- **Team API migration** — `/usage-daily` resolves the user's key through `/team/list` to find the associated team, then queries `/team/daily/activity` for granular daily metrics (prompt tokens, completion tokens, successful/failed requests, per-request averages).
+- **Key alias suffix matching** — `_extract_key_metrics` falls back to matching the last 8 characters of the key alias when an exact match is not found in the team activity breakdown, ensuring keys with truncated or reformatted aliases still resolve correctly.
+- **Silent-zeros warning** — when `format_token_usage_embed` finds no activity data for the day, it adds a warning field ("No activity data found for today. The dashboard will show zeroes.") so users are not misled by blank-looking dashboards.
+
+### Fixed
+- **Latent bug in `_resolve_team_info`** — when `key_info["info"]` contained a `team_id` that was not present in the team list returned by `/team/list`, the function now returns a result with `"team_alias": "Unknown"` and the known `team_id` instead of returning `None` and leaving the user with an unhelpful error. This prevents the `/usage-daily` command from failing when the team list is incomplete or stale.
+
+## v1.0.0 — LiteLLM Usage Discord Bot
+
 ### Added
 - SQLite database for per-user virtual key storage
 - Rich embed with key info, spend, rate limits, models, and config
