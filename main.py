@@ -1,10 +1,12 @@
 import asyncio
 import os
+import traceback
 
 from dotenv import load_dotenv
 import sqlite3
 import aiohttp
 import discord
+from discord import errors as discord_errors
 from discord.ext.commands import Bot as CommandsBot
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -115,6 +117,32 @@ async def fetch_models(virtual_key: str) -> dict:
         ) as resp:
             resp.raise_for_status()
             return await resp.json()
+
+
+async def fetch_model_info_all() -> dict:
+    """GET /model/info — returns ALL model configs keyed by model_name.
+    Uses master key. Returns empty dict on failure."""
+    url = f"{LITELLM_BASE_URL}/model/info"
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(
+                url,
+                headers={"Authorization": f"Bearer {MASTER_KEY}"},
+                timeout=_HTTP_TIMEOUT,
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    # Build lookup: model_name -> model_info
+                    lookup = {}
+                    for entry in (data.get("data") or []):
+                        name = entry.get("model_name", "")
+                        info = entry.get("model_info", {})
+                        if name and isinstance(info, dict):
+                            lookup[name] = info
+                    return lookup
+        except (aiohttp.ClientResponseError, Exception) as e:
+            print(f"[models] fetch_model_info_all failed: {type(e).__name__}: {e}")
+        return {}
 
 
 async def fetch_usd_thb_rate() -> float:
@@ -387,57 +415,170 @@ def format_usage_embed(data: dict, usd_thb_rate: float = 0.0) -> discord.Embed:
     return embed
 
 
-def format_models_embed(data: dict) -> discord.Embed:
-    models = data.get("data", [])
+_PROVIDER_HINTS = {
+    "anthropic": ["claude-"],
+    "openai": ["gpt-", "o1", "o3", "o4"],
+    "google": ["gemini-"],
+    "mistral": ["mistral"],
+    "amazon": ["nova-"],
+    "meta": ["llama"],
+    "nvidia": ["nemotron", "nvidia/"],
+    "microsoft": ["phi-"],
+    "databricks": ["dbrx", "databricks-"],
+    "cohere": ["command-"],
+}
+
+def _detect_provider(model_id: str) -> str:
+    """Detect provider from model name using prefix hints."""
+    if "/" in model_id:
+        return model_id.split("/")[0]
+    lower = model_id.lower()
+    for prov, prefixes in _PROVIDER_HINTS.items():
+        for p in prefixes:
+            if lower.startswith(p):
+                return prov
+    return "other"
+
+
+def _format_short_num(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.0f}K"
+    return str(n)
+
+
+def _lookup_model_info(pricing_data: dict, model_id: str) -> dict:
+    """Find model_info for model_id in pricing_data.
+
+    pricing_data is keyed by model_name from /model/info (e.g. "qwen/qwen3.6-27b").
+    model_id from /v1/models might be "qwen/qwen3.6-27b-thinking".
+    Tries exact match, then suffix/substring fallback.
+    """
+    # Exact match
+    if model_id in pricing_data:
+        return pricing_data[model_id]
+
+    # Short name (after /)
+    short = model_id.split("/")[-1] if "/" in model_id else model_id
+
+    # Try matching by name suffix or prefix
+    for pname, info in pricing_data.items():
+        pshort = pname.split("/")[-1]
+        if short == pshort:
+            return info
+        if short.startswith(pshort):
+            return info
+        if pshort.startswith(short):
+            return info
+
+    return {}
+
+
+def format_models_info_embed(models_resp: dict, pricing_data: dict) -> discord.Embed:
+    """Build a models embed — provider, mode, tokens, cost/1M.
+
+    *models_resp* — /v1/models response (list of model objects).
+    *pricing_data* — dict keyed by model_name, values from /model/info (model_info dict).
+    """
+    model_list = models_resp.get("data", []) if isinstance(models_resp, dict) else []
+
+    if not model_list:
+        return discord.Embed(
+            title="🤖 Available Models",
+            description="No model information available.",
+            color=discord.Color.gold(),
+            timestamp=datetime.now(timezone.utc),
+        )
+
+    # Build rows from model list, enriched with per-model info
+    rows = []
+    for m in model_list:
+        if not isinstance(m, dict):
+            continue
+        model_id = m.get("id") or m.get("model") or "unknown"
+        provider = _detect_provider(model_id)
+        info = _lookup_model_info(pricing_data, model_id)
+
+        rows.append({
+            "provider": provider,
+            "name": model_id,
+            "mode": info.get("mode", "chat"),
+            "max_input": info.get("max_input_tokens", 0) or 0,
+            "max_output": info.get("max_output_tokens", 0) or 0,
+            "price_input": info.get("input_cost_per_token"),
+            "price_output": info.get("output_cost_per_token"),
+        })
+
+    if not rows:
+        return discord.Embed(
+            title="🤖 Available Models",
+            description="No model information available.",
+            color=discord.Color.gold(),
+            timestamp=datetime.now(timezone.utc),
+        )
+
+    # Group by provider (sorted)
+    groups = {}
+    for row in rows:
+        groups.setdefault(row["provider"], []).append(row)
+    sorted_groups = dict(sorted(groups.items()))
+
+    # Provider emoji mapping
+    EMOJI = {
+        "anthropic": "\U0001f7e3", "openai": "\U0001f535", "google": "\U0001f534",
+        "nvidia": "\U0001f7e2", "qwen": "\U0001f7e0", "mistral": "\U0001f7e1",
+        "amazon": "\U0001f536", "meta": "⚪", "other": "⚪",
+    }
+
+    def _fmt_cost(r):
+        pi = r["price_input"]
+        po = r["price_output"]
+        if pi is None and po is None:
+            return "N/A"
+        in_s = f"${(pi * 1_000_000):.2f}" if pi is not None else "—"
+        out_s = f"${(po * 1_000_000):.2f}" if po is not None else "—"
+        return f"$ {in_s}/{out_s}"
+
+    # Build embed
+    total = sum(len(v) for v in sorted_groups.values())
+    provider_count = len(sorted_groups)
+
     embed = discord.Embed(
-        title="🤖 Available Models",
-        description=f"Found **{len(models)}** model(s) you have access to.",
+        title="\U0001f916 Available Models",
+        description=f"**{total}** model(s) across **{provider_count}** provider(s)",
         color=discord.Color.green(),
         timestamp=datetime.now(timezone.utc),
     )
 
-    # Group models by provider prefix
-    provider_groups = {}
-    ungrouped = []
-    for m in models:
-        id_ = m.get("id", "unknown")
-        # Extract provider prefix (e.g., "openai/gpt-4" → "openai")
-        if "/" in id_:
-            provider = id_.split("/")[0]
-        else:
-            provider = None
+    # Build fields per provider
+    for provider, prows in sorted_groups.items():
+        emoji = EMOJI.get(provider, "⚪")
+        provider_lines = []
+        for r in prows:
+            short = r["name"].split("/")[-1] if "/" in r["name"] else r["name"]
+            tok_in = _format_short_num(r["max_input"]) if r["max_input"] else "—"
+            tok_out = _format_short_num(r["max_output"]) if r["max_output"] else ""
+            tok_str = f"{tok_in}" + (f" / {tok_out}" if tok_out else "")
+            cost = _fmt_cost(r)
+            provider_lines.append(f"• {short}\n  **Tokens:** {tok_str}  **Cost:** {cost}")
 
-        if provider:
-            provider_groups.setdefault(provider, [])
-            provider_groups[provider].append(id_)
-        else:
-            ungrouped.append(id_)
+        section = f"{emoji} **{provider.capitalize()}** ({len(prows)})\n" + "\n".join(provider_lines)
+        if len(section) > 1000:
+            compact = f"{emoji} **{provider.capitalize()}** ({len(prows)}): "
+            model_names = ", ".join(r["name"].split("/")[-1] for r in prows)
+            if len(compact + model_names) > 1000:
+                model_names = model_names[:990] + "..."
+            section = compact + model_names
+        # Truncate to Discord's 1024-char limit
+        if len(section) > 1024:
+            section = section[:1021] + "..."
+        try:
+            embed.add_field(name=f"​ {provider}", value=section, inline=False)
+        except discord_errors.InvalidArgument:
+            # Last resort: use a visible name
+            embed.add_field(name=provider, value=section[:1024], inline=False)
 
-    # Build description by provider
-    chunks = []
-    for provider, model_ids in sorted(provider_groups.items()):
-        models_text = "\n".join(f"• `{m}`" for m in sorted(model_ids))
-        chunks.append(f"**{provider}** ({len(model_ids)})\n{models_text}")
-
-    if ungrouped:
-        models_text = "\n".join(f"• `{m}`" for m in sorted(ungrouped))
-        chunks.append(f"**Other** ({len(ungrouped)})\n{models_text}")
-
-    # Discord embed description limit is 1024 chars; split if needed
-    full_text = "\n\n".join(chunks)
-    if len(full_text) > 1000:
-        # Fallback: show count only with top providers
-        summary_parts = []
-        for provider, model_ids in sorted(provider_groups.items()):
-            summary_parts.append(f"{provider}: {len(model_ids)}")
-        if ungrouped:
-            summary_parts.append(f"other: {len(ungrouped)}")
-        summary = ", ".join(summary_parts[:10])
-        if len(summary_parts) > 10:
-            summary += " ..."
-        full_text = f"⚠️ Too many models to display.\n{summary}"
-
-    embed.add_field(name="Models", value=full_text, inline=False)
     return embed
 
 
@@ -476,15 +617,25 @@ async def _send_usage_followup(interaction: discord.Interaction, virtual_key: st
 
 
 async def _send_models_followup(interaction: discord.Interaction, virtual_key: str):
-    """Fetch available models and send them as a follow-up embed."""
+    """Fetch accessible model list + model info (mode, tokens, cost) and send as embed."""
     try:
-        data = await fetch_models(virtual_key)
-        embed = format_models_embed(data)
+        models_resp, pricing_lookup = await asyncio.gather(
+            fetch_models(virtual_key),
+            fetch_model_info_all(),
+        )
+        print(f"[models] /v1/models: {len(models_resp.get('data', []))} models")
+        print(f"[models] /model/info: {len(pricing_lookup)} model configs")
+
+        embed = format_models_info_embed(models_resp, pricing_lookup)
+        print(f"[models] embed built: {len(embed.fields)} fields")
         embed.set_footer(text=f"Requested by {interaction.user}")
         await interaction.followup.send(embed=embed, ephemeral=True)
     except aiohttp.ClientResponseError as e:
-        await interaction.followup.send(_error_message(e.status, "models"), ephemeral=True)
-    except Exception:
+        print(f"[models] HTTP error {e.status}: {e.message}")
+        await interaction.followup.send(_error_message(e.status, "model info"), ephemeral=True)
+    except Exception as e:
+        print(f"[models] Exception: {type(e).__name__}: {e}")
+        traceback.print_exc()
         await interaction.followup.send(
             "❌ Something went wrong. Please try again later.", ephemeral=True
         )
