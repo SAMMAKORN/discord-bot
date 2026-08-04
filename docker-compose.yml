@@ -12,9 +12,10 @@ services:
       MASTER_KEY: ${MASTER_KEY}
       LITELLM_BASE_URL: ${LITELLM_BASE_URL:-https://litellm.sam.co.th}
       DB_PATH: ${DB_PATH:-/app/data/bot.db}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
 
     volumes:
-      - bot-data:/app/data
+      - discord-bot-data:/app/data
 
 volumes:
-  bot-data:
+  discord-bot-data:

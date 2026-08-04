@@ -6,8 +6,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application
+# Copy application (main.py + bot/ package)
 COPY main.py .
+COPY bot/ ./bot/
 
 # Default database path for Docker
 ENV DB_PATH=/app/data/bot.db
