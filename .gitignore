@@ -10,6 +10,7 @@ data/
 
 # Environment
 .env
+.encryption_key
 
 # Docker build artifacts (keep Dockerfile and compose for Coolify)
 docker-compose.override.yml

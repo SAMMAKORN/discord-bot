@@ -55,6 +55,30 @@ python main.py
 
 ## Changelog
 
+## v1.4.0 — Module Architecture, Async SQLite, and Encrypted Key Storage
+
+### Added
+- **`bot/` package** — Monolith split into modular structure:
+  - `bot/api.py` — LiteLLM proxy API client with shared `aiohttp.ClientSession`
+  - `bot/db.py` — Async SQLite layer using `aiosqlite` (non-blocking)
+  - `bot/crypto.py` — Fernet-based symmetric encryption for virtual keys at rest
+  - `bot/embeds.py` — Discord embed formatters (usage, models, daily usage, help)
+  - `bot/commands.py` — Slash commands, buttons, modals, views
+- **Encrypted key storage** — Virtual keys are encrypted with Fernet (AES-128-CBC) before being written to SQLite. Decrypted on read. Auto-migrates legacy plaintext keys on first boot.
+- **`ENCRYPTION_KEY` env var** — Optional. If set, uses the provided key for encryption. If omitted, auto-generates and stores locally (single-instance only).
+- **Graceful shutdown** — Handles SIGINT/SIGTERM to close HTTP session and DB connection cleanly.
+- **Auto-migration** — On first boot, plaintext keys starting with `sk-` are automatically re-encrypted.
+
+### Changed
+- **SQLite → aiosqlite** — All database calls are now async, eliminating event-loop blocking.
+- **HTTP session pooling** — Shared `aiohttp.ClientSession` across all API calls instead of creating a new session per request.
+- `aiosqlite` and `cryptography` added to `requirements.txt`.
+- `.dockerignore` and `.gitignore` updated to exclude `.encryption_key`.
+
+### Removed
+- Synchronous `sqlite3` calls replaced with `aiosqlite`.
+- Per-request `aiohttp.ClientSession` creation in `api.py`.
+
 ## v1.3.0 — Team API Migration, Key Alias Suffix Matching, and Robustness
 
 ### Changed

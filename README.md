@@ -35,7 +35,7 @@ cp .env.example .env
 ```env
 BOT_TOKEN=your_discord_bot_token
 MASTER_KEY=your_litellm_master_key
-LITELLM_BASE_URL=https://litellm.sam.co.th
+LITELLM_BASE_URL=https://litellm.domain.ai
 # Local dev only — Docker/Coolify uses /app/data/bot.db via named volume
 DB_PATH=users.db
 ```
@@ -52,26 +52,26 @@ python main.py
 
 All responses are **ephemeral** (only visible to the user who invoked the command).
 
-| Command        | Description                                                              |
-| -------------- | ------------------------------------------------------------------------ |
-| `/help`        | Show all available commands with interactive buttons                     |
-| `/usage`       | View your LiteLLM usage stats (first time: prompts for your virtual key) |
-| `/usage-daily` | View today's usage dashboard (team API: spend, tokens, requests)         |
+| Command        | Description                                                                   |
+| -------------- | ----------------------------------------------------------------------------- |
+| `/help`        | Show all available commands with interactive buttons                          |
+| `/usage`       | View your LiteLLM usage stats (first time: prompts for your virtual key)      |
+| `/usage-daily` | View today's usage dashboard (team API: spend, tokens, requests)              |
 | `/models`      | List all models you have access to (first time: prompts for your virtual key) |
-| `/reset-key`   | Replace your registered virtual key                                      |
-| `/delete-key`  | Delete your virtual key and all data from the bot                        |
+| `/reset-key`   | Replace your registered virtual key                                           |
+| `/delete-key`  | Delete your virtual key and all data from the bot                             |
 
 ## `/help` Command
 
 The `/help` command displays an embed listing all available commands, along with **interactive buttons** that let you trigger each command directly without typing:
 
-| Button            | Action                                                      |
-| ----------------- | ----------------------------------------------------------- |
-| **📊 Usage Stats**    | Runs `/usage` to check your LiteLLM usage statistics        |
-| **🪙 Daily Usage**    | Runs `/usage-daily` to check today's usage dashboard        |
-| **🤖 Models**         | Runs `/models` to list all accessible AI models             |
-| **🔑 Reset Key**      | Opens a modal to reset/update your virtual key              |
-| **🗑️ Delete Key**     | Deletes your registered virtual key and data from the bot   |
+| Button             | Action                                                    |
+| ------------------ | --------------------------------------------------------- |
+| **📊 Usage Stats** | Runs `/usage` to check your LiteLLM usage statistics      |
+| **🪙 Daily Usage** | Runs `/usage-daily` to check today's usage dashboard      |
+| **🤖 Models**      | Runs `/models` to list all accessible AI models           |
+| **🔑 Reset Key**   | Opens a modal to reset/update your virtual key            |
+| **🗑️ Delete Key**  | Deletes your registered virtual key and data from the bot |
 
 > The buttons remain interactive for 120 seconds after the `/help` response is sent.
 
@@ -95,17 +95,17 @@ Timestamps use **Bangkok time** (Asia/Bangkok timezone). This command is useful 
 
 The `/usage` command displays a rich embed with the following fields:
 
-| Field            | Description                                                                 |
-| ---------------- | --------------------------------------------------------------------------- |
-| **🔑 Virtual Key**   | Truncated virtual key (last 8 chars)                                       |
-| **🏷️ Key Alias**    | Key alias (if set in LiteLLM proxy)                                        |
-| **💰 Total Spend**   | Spend in USD + converted THB (live exchange rate from [exchangerate API](https://www.exchangerate-api.com)) |
-| **📅 Expires**       | Key expiration date                                                        |
-| **🕐 Last Active**   | Last API call time (converted to Asia/Bangkok timezone)                    |
-| **⚡ Rate Limits**    | RPM, TPM, and max parallel requests limits                                 |
-| **💵 Max Budget**    | Per-key budget cap (if configured)                                         |
-| **🤖 Models**        | Allowed models (or "All models")                                           |
-| **⚙️ Config**        | Additional key configuration (if any)                                      |
+| Field              | Description                                                                                                 |
+| ------------------ | ----------------------------------------------------------------------------------------------------------- |
+| **🔑 Virtual Key** | Truncated virtual key (last 8 chars)                                                                        |
+| **🏷️ Key Alias**   | Key alias (if set in LiteLLM proxy)                                                                         |
+| **💰 Total Spend** | Spend in USD + converted THB (live exchange rate from [exchangerate API](https://www.exchangerate-api.com)) |
+| **📅 Expires**     | Key expiration date                                                                                         |
+| **🕐 Last Active** | Last API call time (converted to Asia/Bangkok timezone)                                                     |
+| **⚡ Rate Limits** | RPM, TPM, and max parallel requests limits                                                                  |
+| **💵 Max Budget**  | Per-key budget cap (if configured)                                                                          |
+| **🤖 Models**      | Allowed models (or "All models")                                                                            |
+| **⚙️ Config**      | Additional key configuration (if any)                                                                       |
 
 ## How It Works
 
@@ -133,7 +133,14 @@ For always-online deployment, host on a VPS (Render, Railway, DigitalOcean, etc.
 ## Project Structure
 
 ```
-├── main.py            # Bot source code
+├── main.py            # Bot entry point (config + bot.run)
+├── bot/               # Application modules
+│   ├── __init__.py
+│   ├── api.py         # LiteLLM proxy API client (shared HTTP session)
+│   ├── commands.py    # Slash commands, buttons, modals, views
+│   ├── crypto.py      # Fernet encryption for virtual keys
+│   ├── db.py          # Async SQLite layer (aiosqlite)
+│   └── embeds.py      # Discord embed formatters
 ├── requirements.txt   # Python dependencies
 ├── Dockerfile         # Docker build (includes HEALTHCHECK)
 ├── docker-compose.yml # Local / Coolify compose (named volume: discord-bot-data)
@@ -158,8 +165,9 @@ For always-online deployment, host on a VPS (Render, Railway, DigitalOcean, etc.
 | ------------------ | -------- | --------------------------- |
 | `BOT_TOKEN`        | Yes      | —                           |
 | `MASTER_KEY`       | Yes      | —                           |
-| `LITELLM_BASE_URL` | No       | `https://litellm.sam.co.th` |
+| `LITELLM_BASE_URL` | No       | `https://litellm.domain.ai` |
 | `DB_PATH`          | No       | `/app/data/bot.db`          |
+| `ENCRYPTION_KEY`   | No       | Auto-generated              |
 
 4. Coolify will build and deploy the bot. Database is persisted via a **named Docker volume** (`discord-bot-data` → `/app/data`) and survives redeployments automatically.
 
@@ -174,6 +182,7 @@ Interval: 60s | Timeout: 10s | Start period: 30s | Retries: 3
 ```
 
 The check verifies:
+
 1. The `python` process is running
 2. The database file (`$DB_PATH`) exists — confirming the bot has initialized successfully
 
@@ -189,12 +198,13 @@ docker compose up --build -d
 
 ## Tech Stack
 
-| Component       | Technology                                    |
-| --------------- | --------------------------------------------- |
-| Runtime         | Python 3.12+                                  |
-| Discord Library | discord.py 2.x                                |
-| HTTP Client     | aiohttp (async HTTP requests)                 |
-| Database        | SQLite (per-user virtual key storage)         |
-| Config          | python-dotenv (environment variable loading)  |
-| Timezone        | tzdata (Asia/Bangkok timezone support)        |
-| Containerization| Docker + Docker Compose                       |
+| Component        | Technology                                           |
+| ---------------- | ---------------------------------------------------- |
+| Runtime          | Python 3.12+                                         |
+| Discord Library  | discord.py 2.x                                       |
+| HTTP Client      | aiohttp (shared async session)                       |
+| Database         | aiosqlite (non-blocking async SQLite)                |
+| Encryption       | cryptography (Fernet symmetric encryption)           |
+| Config           | python-dotenv (environment variable loading)         |
+| Timezone         | tzdata (Asia/Bangkok timezone support)               |
+| Containerization | Docker + Docker Compose                              |

@@ -10,6 +10,7 @@ data/
 
 # Environment / Secrets
 .env
+.encryption_key
 
 # IDE
 .vscode/
