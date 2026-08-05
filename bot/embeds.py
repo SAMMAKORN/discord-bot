@@ -37,8 +37,8 @@ _PROVIDER_EMOJI = {
     "qwen": "\U0001f7e0",
     "mistral": "\U0001f7e1",
     "amazon": "\U0001f536",
-    "meta": "⚪",
-    "other": "⚪",
+    "meta": "🦙",
+    "other": "🔵",
 }
 
 
@@ -56,9 +56,11 @@ def _detect_provider(model_id: str) -> str:
 
 def _format_short_num(n: int) -> str:
     if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
+        val = n / 1_000_000
+        return f"{val:g}M"
     if n >= 1_000:
-        return f"{n / 1_000:.0f}K"
+        val = n / 1_000
+        return f"{val:g}K"
     return str(n)
 
 
@@ -217,7 +219,7 @@ def format_models_info_embed(models_resp: dict, pricing_data: dict) -> discord.E
             return "N/A"
         in_s = f"${(pi * 1_000_000):.2f}" if pi is not None else "—"
         out_s = f"${(po * 1_000_000):.2f}" if po is not None else "—"
-        return f"$ {in_s}/{out_s}"
+        return f"{in_s}/{out_s}"
 
     total = sum(len(v) for v in sorted_groups.values())
     provider_count = len(sorted_groups)
@@ -230,27 +232,55 @@ def format_models_info_embed(models_resp: dict, pricing_data: dict) -> discord.E
     )
 
     for provider, prows in sorted_groups.items():
-        emoji = _PROVIDER_EMOJI.get(provider, "⚪")
-        provider_lines = []
+        emoji = _PROVIDER_EMOJI.get(provider, "🔵")
+        field_name = f"{emoji} {provider}"
+        # Discord field name limit is 60 chars; truncate if needed
+        if len(field_name) > 60:
+            field_name = field_name[:57] + "..."
+
+        model_lines = []
         for r in prows:
-            short = r["name"].split("/")[-1] if "/" in r["name"] else r["name"]
+            full_name = r["name"]
             tok_in = _format_short_num(r["max_input"]) if r["max_input"] else "—"
             tok_out = _format_short_num(r["max_output"]) if r["max_output"] else ""
             tok_str = f"{tok_in}" + (f" / {tok_out}" if tok_out else "")
             cost = _fmt_cost(r)
-            provider_lines.append(f"• {short}\n  **Tokens:** {tok_str}  **Cost:** {cost}")
+            model_lines.append(f"• `{full_name}`\n  **Tokens:** {tok_str}  **Cost:** {cost}")
 
-        section = f"{emoji} **{provider.capitalize()}** ({len(prows)})\n" + "\n".join(provider_lines)
+        section = "\n".join(model_lines)
+
+        # If the section exceeds 1000 chars, truncate at a model boundary
+        # rather than hard-cutting mid-entry
         if len(section) > 1000:
-            compact = f"{emoji} **{provider.capitalize()}** ({len(prows)}): "
-            model_names = ", ".join(r["name"].split("/")[-1] for r in prows)
-            if len(compact + model_names) > 1000:
-                model_names = model_names[:990] + "..."
-            section = compact + model_names
+            kept: list[str] = []
+            skipped = 0
+            running = ""
+            separator = "\n"
+            for ml in model_lines:
+                candidate = running + separator + ml if running else ml
+                summary = f"\n… and {len(model_lines)} more models"
+                if len(candidate + summary) > 1000:
+                    skipped += 1
+                    continue
+                kept.append(ml)
+                running = candidate
+            if skipped > 0:
+                summary = f"\n… and {skipped} more models"
+                section = separator.join(kept) + summary
+            else:
+                section = running
+
+        # Final safety trim at a model boundary (never mid-entry)
         if len(section) > 1024:
-            section = section[:1021] + "..."
+            tail = section[:1021]
+            # Find the last newline to avoid cutting mid-model
+            last_newline = tail.rfind("\n")
+            if last_newline > 500:
+                tail = tail[:last_newline]
+            section = tail + "..."
+
         try:
-            embed.add_field(name=f"​ {provider}", value=section, inline=False)
+            embed.add_field(name=field_name, value=section, inline=False)
         except discord_errors.InvalidArgument:
             embed.add_field(name=provider, value=section[:1024], inline=False)
 
@@ -320,7 +350,7 @@ def _resolve_team_info(team_list: list[dict], key_info: dict) -> dict | None:
     return _find_team_for_key(team_list, virtual_key)
 
 
-def format_token_usage_embed(team_info: dict, activity: dict) -> discord.Embed:
+async def format_token_usage_embed(team_info: dict, activity: dict) -> discord.Embed:
     """Format today's token usage stats for the user's key."""
     team_alias = team_info.get("team_alias", "Unknown")
     key_alias = team_info.get("key_alias", "Unknown")
@@ -336,6 +366,17 @@ def format_token_usage_embed(team_info: dict, activity: dict) -> discord.Embed:
 
     avg_tokens = total_tokens // total_requests if total_requests > 0 else 0
     avg_spend = total_spend / total_requests if total_requests > 0 else 0.0
+
+    try:
+        usd_thb_rate = await fetch_usd_thb_rate()
+    except Exception:
+        usd_thb_rate = 0.0
+
+    if usd_thb_rate and total_spend:
+        thb = total_spend * usd_thb_rate
+        spend_str = f"${total_spend:,.2f} USD\n฿{thb:,.2f} THB"
+    else:
+        spend_str = f"${total_spend:,.2f} USD"
 
     now_bkk = datetime.now(ZoneInfo("Asia/Bangkok"))
     today_str = now_bkk.strftime("%Y-%m-%d")
@@ -360,7 +401,7 @@ def format_token_usage_embed(team_info: dict, activity: dict) -> discord.Embed:
     )
     embed.add_field(
         name="\U0001f4b0 **Total Spend**",
-        value=f"`${total_spend:,.2f}`\n",
+        value=spend_str + "\n",
         inline=True,
     )
 

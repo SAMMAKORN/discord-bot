@@ -117,7 +117,7 @@ async def _send_usage_daily_followup(interaction: discord.Interaction, virtual_k
             return
 
         activity = await api.fetch_team_daily_activity(team_info["team_id"])
-        emb = embeds.format_token_usage_embed(team_info, activity)
+        emb = await embeds.format_token_usage_embed(team_info, activity)
         emb.set_footer(text=f"Requested by {interaction.user}")
         await interaction.followup.send(embed=emb, ephemeral=True)
     except aiohttp.ClientResponseError as e:
