@@ -374,7 +374,7 @@ async def format_token_usage_embed(team_info: dict, activity: dict) -> discord.E
 
     if usd_thb_rate and total_spend:
         thb = total_spend * usd_thb_rate
-        spend_str = f"${total_spend:,.2f} USD\n฿{thb:,.2f} THB"
+        spend_str = f"${total_spend:,.2f} USD\n฿{thb:,.2f} THB (1 USD = {usd_thb_rate:,.2f} THB)"
     else:
         spend_str = f"${total_spend:,.2f} USD"
 
