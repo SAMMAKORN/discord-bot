@@ -77,7 +77,7 @@ The `/help` command displays an embed listing all available commands, along with
 
 ## `/models` Command
 
-The `/models` command displays the models accessible with your virtual key, grouped by provider (e.g., `openai`, `anthropic`, `google`). If the list is too long for a single embed, it shows a summary with model counts per provider.
+The `/models` command displays the models accessible with your virtual key, grouped by provider (e.g., `openai`, `anthropic`, `google`). Each model shows its full name (e.g., `` `qwen/qwen3.6-27b` ``), token limits (input/output), and cost per 1M tokens. Large provider groups are smartly truncated to fit Discord's embed limits while preserving per-model detail.
 
 ## `/usage-daily` Command
 
@@ -85,11 +85,11 @@ The `/usage-daily` command displays today's usage dashboard for your virtual key
 
 - **Total Requests** — Combined successful and failed API requests for today.
 - **Total Tokens** — Sum of prompt + completion tokens consumed today.
-- **Total Spend** — USD cost for today's usage.
+- **Total Spend** — USD + THB cost for today's usage (live exchange rate).
 - **Successful / Failed** — Breakdown of request outcomes.
 - **Avg/request** — Average tokens and cost per request.
 
-Timestamps use **Bangkok time** (Asia/Bangkok timezone). This command is useful for tracking daily team-level consumption without the spend/budget details shown by `/usage`.
+Timestamps use **Bangkok time** (Asia/Bangkok timezone). Spend includes both USD and THB conversions. This command is useful for tracking daily team-level consumption without the spend/budget details shown by `/usage`.
 
 ## Embed Fields
 

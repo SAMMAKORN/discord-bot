@@ -4,8 +4,22 @@ A Discord bot for checking LiteLLM proxy usage and browsing available models via
 
 ## Changelog
 
-### v1.4.0 — Module Architecture, Async SQLite, and Encrypted Key Storage
+### v1.4.1 — Embed Fixes and THB in `/usage-daily`
 
+#### Fixed
+- **`/models` double `$`** — Cost string was displaying `$ $15.00/$75.00`; now shows `$15.00/$75.00`.
+- **`/models` truncated model names** — Short names like `qwen3.6-27b` were missing the provider prefix; now shows full names in backticks (e.g. `` `qwen/qwen3.6-27b` ``).
+- **`/models` field name limit** — Provider names exceeding Discord's 60-character field name limit are now truncated.
+- **`/models` compact mode** — No longer drops token and cost data; keeps per-model detail with smart truncation and `… and N more models` summary.
+- **`/models` provider double-labeling** — Provider name now appears only in the embed field name, not redundantly in the field value.
+- **`/models` invisible emoji** — Replaced `⚪` (white circle, invisible on light themes) with `🔵` for `"other"` and `🦙` for `"meta"` (Llama).
+- **`/models` truncation boundary** — Hard truncation now cuts at a model entry boundary (newline) instead of mid-line.
+- **`_format_short_num` rounding** — `500` displayed as `0K`; now uses `{val:g}` format (e.g. `1.28M`).
+
+#### Added
+- **`/usage-daily` THB display** — Spend field now shows both USD and THB (live exchange rate), matching `/usage`.
+
+### v1.4.0 — Module Architecture, Async SQLite, and Encrypted Key Storage
 #### Added
 - **`bot/` package** — Monolith split into modular structure:
   - `bot/api.py` — LiteLLM proxy API client with shared `aiohttp.ClientSession`
