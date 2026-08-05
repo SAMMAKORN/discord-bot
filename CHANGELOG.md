@@ -7,7 +7,7 @@ A Discord bot for checking LiteLLM proxy usage and browsing available models via
 ### v1.4.1 — Embed Fixes and THB in `/usage-daily`
 
 #### Fixed
-- **`/models` double `$`** — Cost string was displaying `\$ \$15.00/\$75.00`; now shows `\$15.00/\$75.00`.
+- **`/models` double `$`** — Cost string was displaying `$ $15.00/$75.00`; now shows `$15.00/$75.00`.
 - **`/models` truncated model names** — Short names like `qwen3.6-27b` were missing the provider prefix; now shows full names in backticks (e.g. `` `qwen/qwen3.6-27b` ``).
 - **`/models` field name limit** — Provider names exceeding Discord's 60-character field name limit are now truncated.
 - **`/models` compact mode** — No longer drops token and cost data; keeps per-model detail with smart truncation and `… and N more models` summary.
@@ -20,7 +20,6 @@ A Discord bot for checking LiteLLM proxy usage and browsing available models via
 - **`/usage-daily` THB display** — Spend field now shows both USD and THB (live exchange rate), matching `/usage`.
 
 ### v1.4.0 — Module Architecture, Async SQLite, and Encrypted Key Storage
-
 #### Added
 - **`bot/` package** — Monolith split into modular structure:
   - `bot/api.py` — LiteLLM proxy API client with shared `aiohttp.ClientSession`
