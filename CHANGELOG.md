@@ -58,6 +58,14 @@ A Discord bot for checking LiteLLM proxy usage and browsing available models via
 #### Fixed
 - **Latent bug in `_resolve_team_info`** — when `key_info["info"]` contained a `team_id` not present in the team list, the function now returns a result with `"team_alias": "Unknown"` and the known `team_id` instead of returning `None`.
 
+### v1.2.4 — Add `/usage-token` Command
+
+- feat: add `/usage-token` command to display token usage statistics
+- fix: normalize LiteLLM model names and expand provider prefix lookup
+- fix: use LiteLLM admin `/models` endpoint for cost and capability data
+- fix: correct cost display, dead variable, and modality icons in `/models`
+- docs: sync `.env.example`, README, and `.dockerignore` with current code
+
 ### v1.2.3 — Bug Fixes
 
 - Fixed model info fetch for `/models` command
@@ -70,6 +78,22 @@ A Discord bot for checking LiteLLM proxy usage and browsing available models via
 ### v1.2.1 — Add `/usage-token` Command
 
 - Token usage statistics display
+
+### v1.2.0 — `/models`, `/delete-key`, Interactive Help & Docker Fixes
+
+- feat: add `/models` and `/delete-key` commands
+- feat: improve help command with interactive buttons
+- refactor: consolidate modals, add helpers, improve error handling
+- fix: simplify bind mount to `./data` (remove unnecessary `COOLIFY_APP_DIR`)
+- fix: use bind mount instead of named volume to persist DB across Coolify redeployments
+- docs: add `DB_PATH` comment to `.env.example`, update README for new features
+
+### v1.1.0 — Add `/models`, `/delete-key`, and Interactive Help
+
+- feat: add `/models` command to browse available models
+- feat: add `/delete-key` command to remove stored virtual keys
+- feat: improve help command with interactive buttons
+- docs: update README for new features
 
 ### v1.0.0 — Initial Release
 
