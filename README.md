@@ -1,5 +1,7 @@
 # LiteLLM Usage Discord Bot
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A Discord bot for checking LiteLLM proxy usage and browsing available models via slash commands. Users register their virtual key on first use, and the bot queries the LiteLLM proxy API to display spend (in USD & THB), models, rate limits, expiry, and more — all as ephemeral ("Only you can see this message") responses.
 
 ## Requirements
@@ -214,3 +216,10 @@ docker compose up --build -d
 | Config           | python-dotenv (environment variable loading)         |
 | Timezone         | tzdata (Asia/Bangkok timezone support)               |
 | Containerization | Docker + Docker Compose                              |
+
+## License
+
+This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
+
+Copyright © 2026 Sammakorn Public Co. Ltd.
+
