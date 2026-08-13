@@ -1,17 +1,25 @@
 """Async SQLite database layer using aiosqlite."""
 
 import asyncio
-from datetime import datetime, timezone
+import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
 import aiosqlite
+from cryptography.fernet import InvalidToken
 
-from .crypto import decrypt, encrypt
+from . import crypto
+
+logger = logging.getLogger(__name__)
 
 _db: aiosqlite.Connection | None = None
 _db_lock = asyncio.Lock()
 _db_open = False
-_DB_PATH: str = "/app/data/bot.db"
+_DB_PATH: str = "users.db"
+
+
+class KeyDecryptionError(RuntimeError):
+    """Raised when stored data cannot be decrypted with the configured key."""
 
 
 def configure(db_path: str):
@@ -44,6 +52,7 @@ async def init_db():
 
     Migrate unencrypted keys to encrypted format on first connection.
     """
+    crypto.initialize()
     conn = await get_db()
     async with conn.cursor() as cur:
         await cur.execute(
@@ -80,8 +89,8 @@ async def _migrate_keys(conn: aiosqlite.Connection):
 
             # Heuristic: plaintext keys start with 'sk-'
             if virtual_key.startswith("sk-"):
-                encrypted = encrypt(virtual_key)
-                now = datetime.now(timezone.utc).isoformat()
+                encrypted = crypto.encrypt(virtual_key)
+                now = datetime.now(UTC).isoformat()
                 await cur.execute(
                     "UPDATE users SET virtual_key = ?, updated_at = ? WHERE user_id = ?",
                     (encrypted, now, user_id),
@@ -90,7 +99,7 @@ async def _migrate_keys(conn: aiosqlite.Connection):
 
         if migrated > 0:
             await conn.commit()
-            print(f"[db] Migrated {migrated} plaintext key(s) to encrypted format.")
+            logger.info("Migrated %s plaintext key(s) to encrypted format", migrated)
 
 
 async def close_db():
@@ -107,32 +116,41 @@ async def get_user_key(user_id: str) -> str | None:
     """Return the stored virtual key for *user_id*, or ``None``."""
     conn = await get_db()
     async with conn.cursor() as cur:
-        await cur.execute(
-            "SELECT virtual_key FROM users WHERE user_id = ?", (user_id,)
-        )
+        await cur.execute("SELECT virtual_key FROM users WHERE user_id = ?", (user_id,))
         row = await cur.fetchone()
     if row is None:
         return None
     encrypted = row["virtual_key"]
     try:
-        return decrypt(encrypted)
-    except Exception:
-        # If decryption fails (key rotation), return the raw value
-        # so the user can re-register
-        print(f"[db] Decryption failed for user {user_id}. Key may have rotated.")
-        return encrypted
+        return crypto.decrypt(encrypted)
+    except InvalidToken as exc:
+        logger.error("Decryption failed for user %s; the encryption key may have rotated", user_id)
+        raise KeyDecryptionError(
+            "Stored virtual key cannot be decrypted; reset or delete it."
+        ) from exc
+
+
+async def has_user_key(user_id: str) -> bool:
+    """Return whether a key row exists without attempting to decrypt it."""
+    conn = await get_db()
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
+        return await cur.fetchone() is not None
 
 
 async def save_user_key(user_id: str, virtual_key: str):
     """Insert or update the virtual key for *user_id* (encrypted at rest)."""
-    now = datetime.now(timezone.utc).isoformat()
-    encrypted = encrypt(virtual_key)
+    now = datetime.now(UTC).isoformat()
+    encrypted = crypto.encrypt(virtual_key)
     conn = await get_db()
     async with conn.cursor() as cur:
         await cur.execute(
             """
-            INSERT OR REPLACE INTO users (user_id, virtual_key, created_at, updated_at)
+            INSERT INTO users (user_id, virtual_key, created_at, updated_at)
             VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                virtual_key = excluded.virtual_key,
+                updated_at = excluded.updated_at
             """,
             (user_id, encrypted, now, now),
         )
@@ -143,8 +161,6 @@ async def delete_user_key(user_id: str) -> bool:
     """Delete the user's virtual key; return ``True`` if a row was removed."""
     conn = await get_db()
     async with conn.cursor() as cur:
-        await cur.execute(
-            "DELETE FROM users WHERE user_id = ?", (user_id,)
-        )
+        await cur.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
     await conn.commit()
     return cur.rowcount > 0

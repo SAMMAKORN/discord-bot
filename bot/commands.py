@@ -1,444 +1,659 @@
-"""Discord command handlers, buttons, modals, and views."""
+"""Discord slash commands, modals, and interactive views."""
 
 import asyncio
-import traceback
-from datetime import datetime, timezone
+import logging
+import time
+from typing import ClassVar
+from uuid import uuid4
 
 import aiohttp
 import discord
-from discord import errors as discord_errors
-from discord.ext.commands import Bot as CommandsBot
+from discord import app_commands
+from discord.ext import commands as discord_commands
 
 from . import api, db, embeds
 
+logger = logging.getLogger(__name__)
+_RATE_LIMIT_SECONDS = 2.0
+_RATE_LIMIT_ENTRY_TTL = 300.0
+_last_action: dict[int, float] = {}
+_last_rate_limit_cleanup = 0.0
 
-# ── Interaction Helpers ────────────────────────────────────────
+
+def _is_thai(interaction: discord.Interaction) -> bool:
+    locale = getattr(interaction, "locale", None)
+    return str(getattr(locale, "value", locale)).lower().startswith("th")
+
+
+def _text(interaction: discord.Interaction, english: str, thai: str) -> str:
+    return thai if _is_thai(interaction) else english
+
+
 async def safe_send(interaction: discord.Interaction, **kwargs):
-    """Send a message using followup if response is already done."""
+    """Send an initial response or follow-up depending on interaction state."""
     if interaction.response.is_done():
-        await interaction.followup.send(**kwargs)
-    else:
-        await interaction.response.send_message(**kwargs)
+        return await interaction.followup.send(**kwargs, wait=True)
+    await interaction.response.send_message(**kwargs)
+    return await interaction.original_response()
 
 
 async def safe_send_modal(interaction: discord.Interaction, modal: discord.ui.Modal):
-    """Send a modal using followup if response is already done."""
+    """Send a modal, which Discord only permits as an initial response."""
     if interaction.response.is_done():
-        await interaction.followup.send_modal(modal)
-    else:
-        await interaction.response.send_modal(modal)
+        raise RuntimeError("A modal cannot be sent after an interaction is acknowledged.")
+    await interaction.response.send_modal(modal)
 
 
-async def _handle_interaction_error(interaction: discord.Interaction, error: Exception, context: str = "command"):
-    """Defer or respond to an interaction when an unhandled exception occurs.
+async def _check_rate_limit(interaction: discord.Interaction) -> bool:
+    global _last_rate_limit_cleanup
+    now = time.monotonic()
+    if now - _last_rate_limit_cleanup >= _RATE_LIMIT_ENTRY_TTL:
+        expired_before = now - _RATE_LIMIT_ENTRY_TTL
+        stale_users = [
+            user_id for user_id, timestamp in _last_action.items() if timestamp < expired_before
+        ]
+        for stale_user in stale_users:
+            _last_action.pop(stale_user, None)
+        _last_rate_limit_cleanup = now
 
-    Discord requires a response within 3 seconds — this ensures we always respond.
-    """
-    # Ignore "Unknown interaction" — the interaction expired, nothing we can do
-    if isinstance(error, discord_errors.NotFound) and getattr(error, 'code', None) == 10062:
-        print(f"[{context}] Interaction expired (10062) — ignoring")
-        return
-    if isinstance(error, discord_errors.HTTPException) and getattr(error, 'code', None) == 40060:
-        print(f"[{context}] Interaction already acknowledged (40060) — ignoring")
-        return
-
-    print(f"[{context}] ERROR: {type(error).__name__}: {error}")
-    traceback.print_exc()
-
-    try:
-        if not interaction.response.is_done():
-            await interaction.response.send_message(
-                "❌ Something went wrong. Please try again later.", ephemeral=True
-            )
-        else:
-            await interaction.followup.send(
-                "❌ Something went wrong. Please try again later.", ephemeral=True
-            )
-    except (discord_errors.NotFound, discord_errors.HTTPException) as e:
-        # Interaction expired or already acknowledged — nothing we can do
-        print(f"[{context}] Failed to send error response (interaction expired): {e}")
-    except Exception as e:
-        print(f"[{context}] Failed to send error response: {e}")
-
-
-# ── Shared Follow-up Helpers ───────────────────────────────────
-async def _send_usage_followup(interaction: discord.Interaction, virtual_key: str):
-    """Fetch usage data and send it as a follow-up embed."""
-    try:
-        data = await api.fetch_usage(virtual_key)
-        emb = await embeds.format_usage_embed(data)
-        emb.set_footer(text=f"Requested by {interaction.user}")
-        await interaction.followup.send(embed=emb, ephemeral=True)
-    except aiohttp.ClientResponseError as e:
-        await interaction.followup.send(embeds._error_message(e.status, "usage data"), ephemeral=True)
-    except Exception:
-        await interaction.followup.send(
-            "❌ Something went wrong. Please try again later.", ephemeral=True
+    user_id = interaction.user.id
+    last_action = _last_action.get(user_id, 0.0)
+    if now - last_action < _RATE_LIMIT_SECONDS:
+        await safe_send(
+            interaction,
+            content=_text(
+                interaction,
+                "⏳ Please wait a moment before trying another command.",
+                "⏳ กรุณารอสักครู่ก่อนเรียกคำสั่งถัดไป",
+            ),
+            ephemeral=True,
         )
+        return False
+    _last_action[user_id] = now
+    return True
+
+
+async def _handle_interaction_error(
+    interaction: discord.Interaction,
+    error: Exception,
+    context: str = "command",
+):
+    """Log an unexpected error and return a traceable user-facing response."""
+    if isinstance(error, discord.NotFound) and getattr(error, "code", None) == 10062:
+        logger.info("%s interaction expired", context)
+        return
+    if isinstance(error, discord.HTTPException) and getattr(error, "code", None) == 40060:
+        logger.info("%s interaction was already acknowledged", context)
+        return
+
+    reference = uuid4().hex[:8]
+    logger.exception("%s failed [reference=%s]", context, reference, exc_info=error)
+    message = _text(
+        interaction,
+        f"❌ Something went wrong. Try again later. Reference: `{reference}`",
+        f"❌ เกิดข้อผิดพลาด กรุณาลองใหม่ภายหลัง รหัสอ้างอิง: `{reference}`",
+    )
+    try:
+        await safe_send(interaction, content=message, ephemeral=True)
+    except (discord.NotFound, discord.HTTPException):
+        logger.warning("Could not deliver error response [reference=%s]", reference)
+
+
+def _invalid_key_message(error: ValueError, thai: bool) -> str:
+    if thai:
+        return "❌ Virtual key ต้องขึ้นต้นด้วย `sk-` มีอย่างน้อย 8 ตัวอักษร และไม่มีช่องว่าง"
+    return f"❌ {error}"
+
+
+def _normalize_virtual_key(raw_value: str) -> str:
+    virtual_key = raw_value.strip()
+    if len(virtual_key) < 8 or not virtual_key.startswith("sk-"):
+        raise ValueError("Virtual key must start with 'sk-' and contain at least 8 characters.")
+    if any(character.isspace() for character in virtual_key):
+        raise ValueError("Virtual key cannot contain whitespace.")
+    return virtual_key
+
+
+async def _send_usage_followup(
+    interaction: discord.Interaction,
+    virtual_key: str,
+    data: dict | None = None,
+):
+    try:
+        usage_data = data if data is not None else await api.fetch_usage(virtual_key)
+        embed = await embeds.format_usage_embed(usage_data, thai=_is_thai(interaction))
+        embed.set_footer(
+            text=f"{'เรียกโดย' if _is_thai(interaction) else 'Requested by'} {interaction.user}"
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except aiohttp.ClientResponseError as error:
+        await interaction.followup.send(
+            embeds._error_message(
+                error.status,
+                "usage data",
+                thai=_is_thai(interaction),
+                user_credential=error.status == 404,
+            ),
+            ephemeral=True,
+        )
+    except Exception as error:  # Boundary: always acknowledge Discord interactions.
+        await _handle_interaction_error(interaction, error, "usage-followup")
+
+
+class ModelPaginatorView(discord.ui.View):
+    """Bounded previous/next navigation for model result pages."""
+
+    def __init__(self, pages: list[discord.Embed], user_id: int, thai: bool = False):
+        super().__init__(timeout=120)
+        self.pages = pages
+        self.user_id = user_id
+        self.index = 0
+        self.message = None
+        if thai:
+            self.previous.label = "ก่อนหน้า"
+            self.next.label = "ถัดไป"
+        self._sync_buttons()
+
+    def _sync_buttons(self) -> None:
+        self.previous.disabled = self.index == 0
+        self.next.disabled = self.index >= len(self.pages) - 1
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.user_id:
+            return True
+        await interaction.response.send_message(
+            "This result belongs to another user.", ephemeral=True
+        )
+        return False
+
+    @discord.ui.button(label="Previous", emoji="◀️", style=discord.ButtonStyle.secondary)
+    async def previous(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        self.index = max(0, self.index - 1)
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.pages[self.index], view=self)
+
+    @discord.ui.button(label="Next", emoji="▶️", style=discord.ButtonStyle.secondary)
+    async def next(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        self.index = min(len(self.pages) - 1, self.index + 1)
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.pages[self.index], view=self)
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                logger.info("Model paginator message expired before controls could be disabled")
 
 
 async def _send_models_followup(interaction: discord.Interaction, virtual_key: str):
-    """Fetch accessible model list + model info and send as embed."""
     try:
-        models_resp, pricing_lookup = await asyncio.gather(
+        models_response, pricing_lookup = await asyncio.gather(
             api.fetch_models(virtual_key),
             api.fetch_model_info_all(),
         )
-        print(f"[models] /v1/models: {len(models_resp.get('data', []))} models")
-        print(f"[models] /model/info: {len(pricing_lookup)} model configs")
-
-        emb = embeds.format_models_info_embed(models_resp, pricing_lookup)
-        print(f"[models] embed built: {len(emb.fields)} fields")
-        emb.set_footer(text=f"Requested by {interaction.user}")
-        await interaction.followup.send(embed=emb, ephemeral=True)
-    except aiohttp.ClientResponseError as e:
-        print(f"[models] HTTP error {e.status}: {e.message}")
-        await interaction.followup.send(embeds._error_message(e.status, "model info"), ephemeral=True)
-    except Exception as e:
-        print(f"[models] Exception: {type(e).__name__}: {e}")
-        traceback.print_exc()
+        thai = _is_thai(interaction)
+        pages = embeds.format_models_info_embeds(models_response, pricing_lookup, thai=thai)
+        for page in pages:
+            page.set_footer(text=f"{'เรียกโดย' if thai else 'Requested by'} {interaction.user}")
+        if len(pages) == 1:
+            await interaction.followup.send(embed=pages[0], ephemeral=True)
+            return
+        view = ModelPaginatorView(pages, interaction.user.id, thai)
+        view.message = await interaction.followup.send(
+            embed=pages[0],
+            view=view,
+            ephemeral=True,
+            wait=True,
+        )
+    except aiohttp.ClientResponseError as error:
         await interaction.followup.send(
-            "❌ Something went wrong. Please try again later.", ephemeral=True
+            embeds._error_message(error.status, "model data", thai=_is_thai(interaction)),
+            ephemeral=True,
         )
+    except Exception as error:  # Boundary: always acknowledge Discord interactions.
+        await _handle_interaction_error(interaction, error, "models-followup")
 
 
-async def _send_usage_daily_followup(interaction: discord.Interaction, virtual_key: str):
-    """Fetch today's usage dashboard and send it as a follow-up embed."""
+async def _send_usage_daily_followup(
+    interaction: discord.Interaction,
+    virtual_key: str,
+    key_data: dict | None = None,
+):
     try:
-        key_data, team_list = await asyncio.gather(
-            api.fetch_usage(virtual_key),
-            api.fetch_team_list(),
-        )
-        team_info = embeds._resolve_team_info(team_list, key_data)
+        usage_data = key_data if key_data is not None else await api.fetch_usage(virtual_key)
+        team_info = embeds._resolve_team_info(usage_data)
         if team_info is None or not team_info["team_id"]:
             await interaction.followup.send(
-                "❌ Could not find your team.", ephemeral=True,
+                _text(
+                    interaction,
+                    "❌ No LiteLLM team is associated with this key. Contact your administrator.",
+                    "❌ คีย์นี้ยังไม่มี LiteLLM team กรุณาติดต่อผู้ดูแลระบบ",
+                ),
+                ephemeral=True,
             )
             return
-
-        activity = await api.fetch_team_daily_activity(team_info["team_id"])
-        emb = await embeds.format_token_usage_embed(team_info, activity)
-        emb.set_footer(text=f"Requested by {interaction.user}")
-        await interaction.followup.send(embed=emb, ephemeral=True)
-    except aiohttp.ClientResponseError as e:
-        await interaction.followup.send(
-            embeds._error_message(e.status, "team usage data"), ephemeral=True
+        activity, team_alias = await asyncio.gather(
+            api.fetch_team_daily_activity(team_info["team_id"]),
+            api.fetch_team_alias(team_info["team_id"]),
         )
-    except Exception:
-        await interaction.followup.send(
-            "❌ Something went wrong. Please try again later.", ephemeral=True
+        if team_alias:
+            team_info["team_alias"] = team_alias
+        embed = await embeds.format_token_usage_embed(
+            team_info,
+            activity,
+            thai=_is_thai(interaction),
         )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except aiohttp.ClientResponseError as error:
+        user_credential = error.status == 404
+        await interaction.followup.send(
+            embeds._error_message(
+                error.status,
+                "team usage data",
+                thai=_is_thai(interaction),
+                user_credential=user_credential,
+            ),
+            ephemeral=True,
+        )
+    except Exception as error:  # Boundary: always acknowledge Discord interactions.
+        await _handle_interaction_error(interaction, error, "usage-daily-followup")
 
 
-# ── Command Handlers ───────────────────────────────────────────
-async def handle_usage(interaction: discord.Interaction):
-    """Core logic for /usage — callable from slash command or button."""
+class SetupButton(discord.ui.Button):
+    def __init__(self, action: str, thai: bool):
+        super().__init__(
+            label="กรอก Virtual Key" if thai else "Enter Virtual Key",
+            emoji="🔑",
+            style=discord.ButtonStyle.primary,
+        )
+        self.action = action
+        self.thai = thai
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(KeySetupModal(self.action, self.thai))
+
+
+class KeySetupView(discord.ui.View):
+    def __init__(self, action: str, thai: bool):
+        super().__init__(timeout=120)
+        self.message = None
+        self.add_item(SetupButton(action, thai))
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                logger.info("Setup consent message expired before controls could be disabled")
+
+
+async def _show_key_setup(interaction: discord.Interaction, action: str):
+    thai = _is_thai(interaction)
+    view = KeySetupView(action, thai)
+    message = _text(
+        interaction,
+        "🔐 **Before you continue**\nYour LiteLLM virtual key is used only to fetch "
+        "your usage and models. It is encrypted at rest. You can replace it with "
+        "`/reset-key` or permanently remove it with `/delete-key`.",
+        "🔐 **ก่อนดำเนินการต่อ**\nVirtual key ใช้สำหรับดึง usage และ models ของคุณเท่านั้น "
+        "ระบบเข้ารหัสคีย์ขณะจัดเก็บ เปลี่ยนได้ด้วย `/reset-key` และลบถาวรด้วย `/delete-key`",
+    )
+    view.message = await safe_send(interaction, content=message, view=view, ephemeral=True)
+
+
+async def _get_stored_key(interaction: discord.Interaction) -> str | None:
     try:
-        user_id = str(interaction.user.id)
-        virtual_key = await db.get_user_key(user_id)
+        return await db.get_user_key(str(interaction.user.id))
+    except db.KeyDecryptionError:
+        await safe_send(
+            interaction,
+            content=_text(
+                interaction,
+                "🔐 Your stored key can no longer be decrypted. Use `/reset-key` to replace it "
+                "or `/delete-key` to remove it.",
+                "🔐 ไม่สามารถถอดรหัสคีย์เดิมได้ ใช้ `/reset-key` เพื่อเปลี่ยนคีย์ หรือ `/delete-key` เพื่อลบข้อมูล",
+            ),
+            ephemeral=True,
+        )
+        return None
 
-        if virtual_key is None:
-            await safe_send_modal(interaction, KeySetupModal(action="usage"))
+
+async def handle_usage(interaction: discord.Interaction):
+    try:
+        if not await _check_rate_limit(interaction):
             return
-
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=True)
+        virtual_key = await _get_stored_key(interaction)
+        if virtual_key is None:
+            if not interaction.response.is_done():
+                await _show_key_setup(interaction, "usage")
+            return
+        await interaction.response.defer(ephemeral=True)
         await _send_usage_followup(interaction, virtual_key)
-    except Exception as e:
-        await _handle_interaction_error(interaction, e, "usage")
+    except Exception as error:  # Command boundary.
+        await _handle_interaction_error(interaction, error, "usage")
 
 
 async def handle_models(interaction: discord.Interaction):
-    """Core logic for /models — callable from slash command or button."""
     try:
-        user_id = str(interaction.user.id)
-        virtual_key = await db.get_user_key(user_id)
-
-        if virtual_key is None:
-            await safe_send_modal(interaction, KeySetupModal(action="models"))
+        if not await _check_rate_limit(interaction):
             return
-
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=True)
+        virtual_key = await _get_stored_key(interaction)
+        if virtual_key is None:
+            if not interaction.response.is_done():
+                await _show_key_setup(interaction, "models")
+            return
+        await interaction.response.defer(ephemeral=True)
         await _send_models_followup(interaction, virtual_key)
-    except Exception as e:
-        await _handle_interaction_error(interaction, e, "models")
+    except Exception as error:  # Command boundary.
+        await _handle_interaction_error(interaction, error, "models")
 
 
 async def handle_usage_daily(interaction: discord.Interaction):
-    """Core logic for /usage-daily — today's usage dashboard."""
     try:
-        user_id = str(interaction.user.id)
-        virtual_key = await db.get_user_key(user_id)
-
-        if virtual_key is None:
-            await safe_send_modal(interaction, KeySetupModal(action="usage-daily"))
+        if not await _check_rate_limit(interaction):
             return
-
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=True)
+        virtual_key = await _get_stored_key(interaction)
+        if virtual_key is None:
+            if not interaction.response.is_done():
+                await _show_key_setup(interaction, "usage-daily")
+            return
+        await interaction.response.defer(ephemeral=True)
         await _send_usage_daily_followup(interaction, virtual_key)
-    except Exception as e:
-        await _handle_interaction_error(interaction, e, "usage-daily")
+    except Exception as error:  # Command boundary.
+        await _handle_interaction_error(interaction, error, "usage-daily")
 
 
 async def handle_reset_key(interaction: discord.Interaction):
-    """Core logic for /reset-key — callable from slash command or button."""
     try:
-        user_id = str(interaction.user.id)
-        existing = await db.get_user_key(user_id)
-
-        if existing is None:
-            msg = ("⚠️ You don't have a registered virtual key yet.\n"
-                   "Use **`/usage`** to set one up first.")
-            await safe_send(interaction, content=msg, ephemeral=True)
+        if not await _check_rate_limit(interaction):
             return
-
-        await safe_send_modal(interaction, ResetKeyModal())
-    except Exception as e:
-        await _handle_interaction_error(interaction, e, "reset-key")
+        if not await db.has_user_key(str(interaction.user.id)):
+            await safe_send(
+                interaction,
+                content=_text(
+                    interaction,
+                    "⚠️ No key is registered yet. Use `/usage` to start setup.",
+                    "⚠️ ยังไม่มีคีย์ที่ลงทะเบียน ใช้ `/usage` เพื่อเริ่มตั้งค่า",
+                ),
+                ephemeral=True,
+            )
+            return
+        await safe_send_modal(interaction, ResetKeyModal(_is_thai(interaction)))
+    except Exception as error:  # Command boundary.
+        await _handle_interaction_error(interaction, error, "reset-key")
 
 
 async def handle_delete_key(interaction: discord.Interaction):
-    """Core logic for /delete-key — shows confirmation view."""
     try:
-        user_id = str(interaction.user.id)
-        existing = await db.get_user_key(user_id)
-
-        if existing is None:
-            msg = "⚠️ You don't have any registered data to delete."
-            await safe_send(interaction, content=msg, ephemeral=True)
+        if not await _check_rate_limit(interaction):
             return
-
-        await safe_send(
+        if not await db.has_user_key(str(interaction.user.id)):
+            await safe_send(
+                interaction,
+                content=_text(
+                    interaction,
+                    "⚠️ You do not have any stored data to delete.",
+                    "⚠️ คุณไม่มีข้อมูลที่จัดเก็บไว้ให้ลบ",
+                ),
+                ephemeral=True,
+            )
+            return
+        view = DeleteConfirmView(str(interaction.user.id), _is_thai(interaction))
+        view.message = await safe_send(
             interaction,
-            content="⚠️ **Are you sure?** This will permanently delete your virtual key and all data.",
-            view=DeleteConfirmView(user_id),
+            content=_text(
+                interaction,
+                "⚠️ **Are you sure?** This permanently deletes your virtual key and stored data.",
+                "⚠️ **ยืนยันการลบหรือไม่?** การดำเนินการนี้จะลบ virtual key และข้อมูลถาวร",
+            ),
+            view=view,
             ephemeral=True,
         )
-    except Exception as e:
-        await _handle_interaction_error(interaction, e, "delete-key")
+    except Exception as error:  # Command boundary.
+        await _handle_interaction_error(interaction, error, "delete-key")
 
 
-# ── Buttons / Views ────────────────────────────────────────────
-class UsageButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="Usage Stats", style=discord.ButtonStyle.primary,
-                         custom_id="help_usage", emoji="📊", row=0)
-
-    async def callback(self, interaction: discord.Interaction):
-        await handle_usage(interaction)
-
-
-class ModelsButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="Models", style=discord.ButtonStyle.primary,
-                         custom_id="help_models", emoji="🤖", row=0)
+class ActionButton(discord.ui.Button):
+    def __init__(self, action: str, label: str, emoji: str, style: discord.ButtonStyle, row: int):
+        super().__init__(label=label, emoji=emoji, style=style, row=row)
+        self.action = action
 
     async def callback(self, interaction: discord.Interaction):
-        await handle_models(interaction)
-
-
-class ResetKeyButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="Reset Key", style=discord.ButtonStyle.secondary,
-                         custom_id="help_reset_key", emoji="🔑", row=1)
-
-    async def callback(self, interaction: discord.Interaction):
-        await handle_reset_key(interaction)
-
-
-class DeleteKeyButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="Delete Key", style=discord.ButtonStyle.danger,
-                         custom_id="help_delete_key", emoji="🗑️", row=1)
-
-    async def callback(self, interaction: discord.Interaction):
-        await handle_delete_key(interaction)
-
-
-class UsageDailyButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="Daily Usage", style=discord.ButtonStyle.primary,
-                         custom_id="help_usage_daily", emoji="🪙", row=0)
-
-    async def callback(self, interaction: discord.Interaction):
-        await handle_usage_daily(interaction)
+        handlers = {
+            "usage": handle_usage,
+            "usage-daily": handle_usage_daily,
+            "models": handle_models,
+            "reset-key": handle_reset_key,
+            "delete-key": handle_delete_key,
+        }
+        await handlers[self.action](interaction)
 
 
 class HelpView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, thai: bool = False):
         super().__init__(timeout=120)
-        self.add_item(UsageButton())
-        self.add_item(UsageDailyButton())
-        self.add_item(ModelsButton())
-        self.add_item(ResetKeyButton())
-        self.add_item(DeleteKeyButton())
+        self.message = None
+        labels = {
+            "usage": "สถิติการใช้งาน" if thai else "Usage Stats",
+            "usage-daily": "การใช้งานวันนี้" if thai else "Daily Usage",
+            "models": "โมเดล" if thai else "Models",
+            "reset-key": "เปลี่ยนคีย์" if thai else "Reset Key",
+            "delete-key": "ลบคีย์" if thai else "Delete Key",
+        }
+        self.add_item(ActionButton("usage", labels["usage"], "📊", discord.ButtonStyle.primary, 0))
+        self.add_item(
+            ActionButton("usage-daily", labels["usage-daily"], "🪙", discord.ButtonStyle.primary, 0)
+        )
+        self.add_item(
+            ActionButton("models", labels["models"], "🤖", discord.ButtonStyle.primary, 0)
+        )
+        self.add_item(
+            ActionButton("reset-key", labels["reset-key"], "🔑", discord.ButtonStyle.secondary, 1)
+        )
+        self.add_item(
+            ActionButton("delete-key", labels["delete-key"], "🗑️", discord.ButtonStyle.danger, 1)
+        )
 
-
-# ── Delete Confirmation ────────────────────────────────────────
-class _DeleteConfirmBtn(discord.ui.Button):
-    def __init__(self, user_id: str):
-        super().__init__(label="Yes, Delete", style=discord.ButtonStyle.danger,
-                         custom_id="delete_confirm_yes")
-        self._user_id = user_id
-
-    async def callback(self, interaction: discord.Interaction):
-        try:
-            deleted = await db.delete_user_key(self._user_id)
-            msg = "✅ Your data has been deleted successfully." if deleted \
-                  else "❌ Failed to delete your data. Please try again."
-            await interaction.response.send_message(msg, ephemeral=True)
-            self.view.stop()
-        except Exception as e:
-            print(f"[delete-yes] ERROR: {type(e).__name__}: {e}")
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+        if self.message:
             try:
-                await interaction.response.send_message(
-                    "❌ Failed to delete. Please try again.", ephemeral=True
-                )
-            except Exception:
-                pass
-            self.view.stop()
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                logger.info("Help message expired before controls could be disabled")
 
 
-class _DeleteCancelBtn(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="Cancel", style=discord.ButtonStyle.secondary,
-                         custom_id="delete_confirm_no")
+class DeleteConfirmButton(discord.ui.Button):
+    def __init__(self, user_id: str, thai: bool):
+        super().__init__(
+            label="ยืนยันการลบ" if thai else "Yes, Delete",
+            style=discord.ButtonStyle.danger,
+        )
+        self.user_id = user_id
+        self.thai = thai
 
     async def callback(self, interaction: discord.Interaction):
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message(
+                "This action belongs to another user.", ephemeral=True
+            )
+            return
         try:
-            await interaction.response.send_message("✅ Cancelled. Your data is safe.", ephemeral=True)
+            deleted = await db.delete_user_key(self.user_id)
+            message = (
+                ("✅ ลบข้อมูลเรียบร้อยแล้ว" if self.thai else "✅ Your data has been deleted.")
+                if deleted
+                else ("❌ ไม่พบข้อมูลที่ต้องการลบ" if self.thai else "❌ No stored data was found.")
+            )
+            await interaction.response.edit_message(content=message, view=None)
             self.view.stop()
-        except Exception as e:
-            print(f"[delete-cancel] ERROR: {e}")
-            self.view.stop()
+        except Exception as error:  # Interaction boundary.
+            await _handle_interaction_error(interaction, error, "delete-confirm")
+
+
+class DeleteCancelButton(discord.ui.Button):
+    def __init__(self, thai: bool):
+        super().__init__(
+            label="ยกเลิก" if thai else "Cancel",
+            style=discord.ButtonStyle.secondary,
+        )
+        self.thai = thai
+
+    async def callback(self, interaction: discord.Interaction):
+        message = "✅ ยกเลิกแล้ว ข้อมูลยังปลอดภัย" if self.thai else "✅ Cancelled. Your data is safe."
+        await interaction.response.edit_message(content=message, view=None)
+        self.view.stop()
 
 
 class DeleteConfirmView(discord.ui.View):
-    def __init__(self, user_id: str):
+    def __init__(self, user_id: str, thai: bool):
         super().__init__(timeout=60)
-        self.add_item(_DeleteConfirmBtn(user_id))
-        self.add_item(_DeleteCancelBtn())
+        self.message = None
+        self.add_item(DeleteConfirmButton(user_id, thai))
+        self.add_item(DeleteCancelButton(thai))
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                logger.info("Delete confirmation expired before controls could be disabled")
 
 
-# ── Modals ─────────────────────────────────────────────────────
-class KeySetupModal(discord.ui.Modal, title="🔑 First-Time Setup — Enter Virtual Key"):
-    """Unified modal for key setup — handles both /usage and /models flows."""
-    def __init__(self, action: str = "usage"):
-        super().__init__()
-        self._action = action
-
-    key_input = discord.ui.TextInput(
-        label="LiteLLM Virtual Key",
-        placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxx",
-        style=discord.TextStyle.short,
-        required=True,
-        min_length=1,
-        max_length=500,
-    )
+class KeySetupModal(discord.ui.Modal):
+    def __init__(self, action: str = "usage", thai: bool = False):
+        super().__init__(title="🔑 ตั้งค่า Virtual Key" if thai else "🔑 Set Up Virtual Key")
+        self.action = action
+        self.thai = thai
+        self.key_input = discord.ui.TextInput(
+            label="LiteLLM Virtual Key",
+            placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxx",
+            required=True,
+            min_length=8,
+            max_length=500,
+        )
+        self.add_item(self.key_input)
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        # Validate before the try below so JSONDecodeError (a ValueError) from an
+        # upstream reply is never reported to the user as a key-format problem.
         try:
-            user_id = str(interaction.user.id)
-            virtual_key = self.key_input.value
-            await db.save_user_key(user_id, virtual_key)
+            virtual_key = _normalize_virtual_key(self.key_input.value)
+        except ValueError as error:
+            await interaction.edit_original_response(content=_invalid_key_message(error, self.thai))
+            return
 
-            messages = {
-                "usage": "✅ Virtual key saved! Fetching usage data ...",
-                "usage-daily": "✅ Virtual key saved! Fetching usage data ...",
-            }
-            status_msg = messages.get(self._action,
-                                      "✅ Virtual key saved! Fetching available models ...")
-            await interaction.response.send_message(content=status_msg, ephemeral=True)
-
-            if self._action == "usage":
-                await _send_usage_followup(interaction, virtual_key)
-            elif self._action == "usage-daily":
-                await _send_usage_daily_followup(interaction, virtual_key)
+        try:
+            verified_data = await api.fetch_usage(virtual_key)
+            await db.save_user_key(str(interaction.user.id), virtual_key)
+            await interaction.edit_original_response(
+                content="✅ บันทึกคีย์แล้ว" if self.thai else "✅ Virtual key verified and saved."
+            )
+            if self.action == "usage":
+                await _send_usage_followup(interaction, virtual_key, verified_data)
+            elif self.action == "usage-daily":
+                await _send_usage_daily_followup(interaction, virtual_key, verified_data)
             else:
                 await _send_models_followup(interaction, virtual_key)
-        except Exception as e:
-            print(f"[modal-setup] ERROR: {type(e).__name__}: {e}")
-            traceback.print_exc()
-            try:
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(
-                        "❌ Failed to save key. Please try again.", ephemeral=True
-                    )
-            except Exception:
-                pass
+        except aiohttp.ClientResponseError as error:
+            await interaction.edit_original_response(
+                content=embeds._error_message(
+                    error.status,
+                    "key",
+                    thai=self.thai,
+                    user_credential=error.status == 404,
+                )
+            )
+        except Exception as error:  # Modal boundary.
+            await _handle_interaction_error(interaction, error, "key-setup")
 
 
-class ResetKeyModal(discord.ui.Modal, title="🔑 Reset Virtual Key"):
-    key_input = discord.ui.TextInput(
-        label="New LiteLLM Virtual Key",
-        placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxx",
-        style=discord.TextStyle.short,
-        required=True,
-        min_length=1,
-        max_length=500,
-    )
+class ResetKeyModal(discord.ui.Modal):
+    def __init__(self, thai: bool = False):
+        super().__init__(title="🔑 เปลี่ยน Virtual Key" if thai else "🔑 Reset Virtual Key")
+        self.thai = thai
+        self.key_input = discord.ui.TextInput(
+            label="LiteLLM Virtual Key ใหม่" if thai else "New LiteLLM Virtual Key",
+            placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxx",
+            required=True,
+            min_length=8,
+            max_length=500,
+        )
+        self.add_item(self.key_input)
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            user_id = str(interaction.user.id)
-            await db.save_user_key(user_id, self.key_input.value)
-            await interaction.response.send_message(
-                "✅ Virtual key updated successfully!", ephemeral=True
+            virtual_key = _normalize_virtual_key(self.key_input.value)
+        except ValueError as error:
+            await interaction.edit_original_response(content=_invalid_key_message(error, self.thai))
+            return
+
+        try:
+            await api.fetch_usage(virtual_key)
+            await db.save_user_key(str(interaction.user.id), virtual_key)
+            await interaction.edit_original_response(
+                content="✅ เปลี่ยนคีย์เรียบร้อยแล้ว"
+                if self.thai
+                else "✅ Virtual key verified and updated."
             )
-        except Exception as e:
-            print(f"[modal-reset] ERROR: {type(e).__name__}: {e}")
-            try:
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(
-                        "❌ Failed to update key. Please try again.", ephemeral=True
-                    )
-            except Exception:
-                pass
+        except aiohttp.ClientResponseError as error:
+            await interaction.edit_original_response(
+                content=embeds._error_message(
+                    error.status,
+                    "key",
+                    thai=self.thai,
+                    user_credential=error.status == 404,
+                )
+            )
+        except Exception as error:  # Modal boundary.
+            await _handle_interaction_error(interaction, error, "reset-key-modal")
 
 
-# ── Bot Class ──────────────────────────────────────────────────
-class LiteLLMBot(CommandsBot):
+class ThaiTranslator(app_commands.Translator):
+    translations: ClassVar[dict[str, str]] = {
+        "Check your LiteLLM usage statistics": "ดูสถิติการใช้งาน LiteLLM",
+        "List all models you have access to": "ดูโมเดลทั้งหมดที่คุณมีสิทธิ์ใช้",
+        "Reset your LiteLLM virtual key": "เปลี่ยน LiteLLM virtual key",
+        "Delete your data from the system": "ลบคีย์และข้อมูลของคุณจากระบบ",
+        "Check today's usage dashboard (spend, tokens, requests)": "ดู spend, tokens และ requests ของวันนี้",
+        "Show all available commands with interactive buttons": "ดูคำสั่งทั้งหมดพร้อมปุ่มใช้งาน",
+    }
+
+    async def translate(self, string, locale, _context):
+        if locale is discord.Locale.thai:
+            return self.translations.get(string.message)
+        return None
+
+
+class LiteLLMBot(discord_commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
-        intents.message_content = True
-        super().__init__(command_prefix="!", intents=intents)
+        super().__init__(command_prefix=discord_commands.when_mentioned, intents=intents)
+        self.tree.on_error = self.on_app_command_error
 
     async def setup_hook(self):
         await db.init_db()
+        await self.tree.set_translator(ThaiTranslator())
         await self.tree.sync()
-        print("✅ Database initialized")
-        print("✅ Commands synced")
+        logger.info("Database initialized and application commands synced")
 
     async def on_ready(self):
-        print(f"✅ Logged in as {self.user} (ID: {self.user.id})")
+        logger.info("Logged in as %s (ID: %s)", self.user, self.user.id if self.user else "unknown")
 
-    async def on_command_error(self, ctx, error):
-        print(f"[error] Command error: {type(error).__name__}: {error}")
-
-    async def on_application_command_error(self, interaction: discord.Interaction, error):
-        """Catch errors from slash commands before they time out Discord."""
-        if isinstance(error, discord_errors.NotFound) and getattr(error, 'code', None) == 10062:
-            return  # Interaction expired, ignore
-        if isinstance(error, discord_errors.HTTPException) and getattr(error, 'code', None) == 40060:
-            return  # Already acknowledged, ignore
-
-        print(f"[error] Slash command error: {type(error).__name__}: {error}")
-        traceback.print_exc()
-        try:
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    "❌ Something went wrong. Please try again later.", ephemeral=True
-                )
-            else:
-                await interaction.followup.send(
-                    "❌ Something went wrong. Please try again later.", ephemeral=True
-                )
-        except (discord_errors.NotFound, discord_errors.HTTPException) as e:
-            print(f"[error] Failed to send error response (interaction expired): {e}")
-        except Exception as e:
-            print(f"[error] Failed to send error response: {e}")
+    async def on_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ):
+        await _handle_interaction_error(interaction, error, "application-command")
 
     async def close(self):
         await api.close_session()
@@ -446,7 +661,6 @@ class LiteLLMBot(CommandsBot):
         await super().close()
 
 
-# ── Slash Commands ─────────────────────────────────────────────
 def register_commands(bot: LiteLLMBot):
     """Register all slash commands on the bot instance."""
 
@@ -466,14 +680,26 @@ def register_commands(bot: LiteLLMBot):
     async def delete_key(interaction: discord.Interaction):
         await handle_delete_key(interaction)
 
-    @bot.tree.command(name="usage-daily", description="Check today's usage dashboard (spend, tokens, requests)")
+    @bot.tree.command(
+        name="usage-daily",
+        description="Check today's usage dashboard (spend, tokens, requests)",
+    )
     async def usage_daily(interaction: discord.Interaction):
         await handle_usage_daily(interaction)
 
-    @bot.tree.command(name="help", description="Show all available commands with interactive buttons")
+    @bot.tree.command(
+        name="help",
+        description="Show all available commands with interactive buttons",
+    )
     async def help_command(interaction: discord.Interaction):
         try:
-            emb = embeds.build_help_embed(interaction.user)
-            await interaction.response.send_message(embed=emb, view=HelpView(), ephemeral=True)
-        except Exception as e:
-            await _handle_interaction_error(interaction, e, "help")
+            thai = _is_thai(interaction)
+            view = HelpView(thai)
+            view.message = await safe_send(
+                interaction,
+                embed=embeds.build_help_embed(interaction.user, thai=thai),
+                view=view,
+                ephemeral=True,
+            )
+        except Exception as error:  # Command boundary.
+            await _handle_interaction_error(interaction, error, "help")
