@@ -49,7 +49,12 @@ def _load_or_create_key() -> bytes:
     key_path = _key_file_path()
     if key_path.exists():
         key = _validate_key(key_path.read_bytes().strip(), str(key_path))
-        key_path.chmod(0o600)
+        # Best effort: the file may live on a read-only mount or be owned by
+        # another user, neither of which should stop the bot from starting.
+        try:
+            key_path.chmod(0o600)
+        except OSError as exc:
+            logger.warning("Could not restrict permissions on %s: %s", key_path, exc)
         return key
 
     key_path.parent.mkdir(parents=True, exist_ok=True)

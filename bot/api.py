@@ -14,11 +14,15 @@ logger = logging.getLogger(__name__)
 _HTTP_TIMEOUT = aiohttp.ClientTimeout(total=30)
 _session: aiohttp.ClientSession | None = None
 _session_lock = asyncio.Lock()
-_cache_lock = asyncio.Lock()
+_model_info_lock = asyncio.Lock()
+_exchange_rate_lock = asyncio.Lock()
 _model_info_cache: tuple[float, dict] | None = None
+# (expires_at_monotonic, rate) — failures are cached briefly so an outage in the
+# FX provider cannot serialize every /usage invocation behind a fresh request.
 _exchange_rate_cache: tuple[float, float] | None = None
 _MODEL_INFO_TTL = 600
 _EXCHANGE_RATE_TTL = 3600
+_EXCHANGE_RATE_FAILURE_TTL = 60
 
 
 async def get_session() -> aiohttp.ClientSession:
@@ -90,7 +94,7 @@ async def fetch_model_info_all(*, force_refresh: bool = False) -> dict:
     if not force_refresh and _model_info_cache and now - _model_info_cache[0] < _MODEL_INFO_TTL:
         return _model_info_cache[1]
 
-    async with _cache_lock:
+    async with _model_info_lock:
         now = time.monotonic()
         if not force_refresh and _model_info_cache and now - _model_info_cache[0] < _MODEL_INFO_TTL:
             return _model_info_cache[1]
@@ -125,29 +129,58 @@ async def fetch_model_info_all(*, force_refresh: bool = False) -> dict:
 
 
 async def fetch_usd_thb_rate() -> float:
-    """Fetch live USD/THB exchange rate from exchangerate API."""
+    """Return the USD/THB rate, or ``0.0`` when it cannot be determined."""
     global _exchange_rate_cache
-    now = time.monotonic()
-    if _exchange_rate_cache and now - _exchange_rate_cache[0] < _EXCHANGE_RATE_TTL:
+    if _exchange_rate_cache and time.monotonic() < _exchange_rate_cache[0]:
         return _exchange_rate_cache[1]
 
-    async with _cache_lock:
-        now = time.monotonic()
-        if _exchange_rate_cache and now - _exchange_rate_cache[0] < _EXCHANGE_RATE_TTL:
+    async with _exchange_rate_lock:
+        if _exchange_rate_cache and time.monotonic() < _exchange_rate_cache[0]:
             return _exchange_rate_cache[1]
 
         session = await get_session()
         url = "https://open.er-api.com/v6/latest/USD"
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+            rates = data.get("rates") if isinstance(data, dict) else None
+            rate = float(rates.get("THB", 0.0)) if isinstance(rates, dict) else 0.0
+        except (TimeoutError, aiohttp.ClientError, TypeError, ValueError) as exc:
+            logger.warning("Could not refresh USD/THB rate: %s", exc)
+            rate = 0.0
+
+        ttl = _EXCHANGE_RATE_TTL if rate > 0 else _EXCHANGE_RATE_FAILURE_TTL
+        _exchange_rate_cache = (time.monotonic() + ttl, rate)
+        return rate
+
+
+async def fetch_team_alias(team_id: str) -> str | None:
+    """GET /team/info — returns the team's display alias, or ``None``.
+
+    ``/key/info`` only carries ``team_id``, so the alias needs a second lookup.
+    Failures are swallowed: a missing alias must not fail the whole dashboard.
+    """
+    session = await get_session()
+    url = f"{LITELLM_BASE_URL}/team/info"
+    try:
+        async with session.get(
+            url,
+            params={"team_id": team_id},
+            headers={"Authorization": f"Bearer {MASTER_KEY}"},
+        ) as resp:
             resp.raise_for_status()
             data = await resp.json()
-        try:
-            rate = float((data.get("rates") or {}).get("THB", 0.0))
-        except (TypeError, ValueError):
-            rate = 0.0
-        if rate > 0:
-            _exchange_rate_cache = (time.monotonic(), rate)
-        return rate
+    except (TimeoutError, aiohttp.ClientError) as exc:
+        logger.warning("Could not resolve team alias for %s: %s", team_id, exc)
+        return None
+
+    if not isinstance(data, dict):
+        return None
+    nested = data.get("team_info")
+    info = nested if isinstance(nested, dict) else data
+    alias = info.get("team_alias")
+    return str(alias) if alias else None
 
 
 async def fetch_team_daily_activity(team_id: str) -> dict:

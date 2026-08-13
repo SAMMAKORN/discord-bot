@@ -12,6 +12,14 @@ class EmbedTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(null_embed), 6000)
         self.assertIn("$1.25 USD", string_embed.fields[1].value)
 
+    async def test_rate_limits_use_the_field_names_litellm_returns(self):
+        # /key/info reports rpm_limit / tpm_limit, not rpm_requests.
+        info = {"rpm_limit": 60, "tpm_limit": 90000, "max_parallel_requests": 5}
+        with patch("bot.embeds.fetch_usd_thb_rate", new=AsyncMock(return_value=0)):
+            result = await embeds.format_usage_embed({"info": info})
+        limits = next(field.value for field in result.fields if "Rate Limits" in field.name)
+        self.assertEqual(limits, "60 req/min, 90,000 tok/min, 5 parallel")
+
     async def test_thai_usage_localizes_primary_fields(self):
         with patch("bot.embeds.fetch_usd_thb_rate", new=AsyncMock(return_value=0)):
             result = await embeds.format_usage_embed({"info": {}}, thai=True)
@@ -54,3 +62,28 @@ class EmbedTests(unittest.IsolatedAsyncioTestCase):
         totals, found = embeds._extract_key_metrics(results, "owner-12345678")
         self.assertFalse(found)
         self.assertEqual(totals["spend"], 0)
+
+    async def test_daily_metrics_match_alias_containing_markdown(self):
+        alias = "sammakorn_dev_key"
+        activity = {
+            "results": [
+                {
+                    "breakdown": {
+                        "api_keys": {
+                            "hash": {
+                                "metadata": {"key_alias": alias},
+                                "metrics": {"spend": 12.5, "total_tokens": 1000, "api_requests": 7},
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+        team_info = {"team_alias": "sam", "team_id": "t1", "key_alias": alias}
+        with patch("bot.embeds.fetch_usd_thb_rate", new=AsyncMock(return_value=0)):
+            result = await embeds.format_token_usage_embed(team_info, activity)
+
+        values = {field.name: field.value for field in result.fields}
+        self.assertNotIn("⚠️ Note", values)
+        self.assertIn("`7`", values["📊 **Total Requests**"])
+        self.assertIn("$12.50", values["💰 **Total Spend**"])

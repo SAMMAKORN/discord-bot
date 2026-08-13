@@ -41,7 +41,9 @@ class CryptoTests(unittest.TestCase):
             with patch.dict(os.environ, environment, clear=True):
                 crypto._FERNET = None
                 first_token = crypto.encrypt("sk-secret")
-                self.assertEqual(stat.S_IMODE(key_file.stat().st_mode), 0o600)
+                if os.name != "nt":
+                    # Windows does not honour POSIX mode bits on os.open().
+                    self.assertEqual(stat.S_IMODE(key_file.stat().st_mode), 0o600)
 
                 crypto._FERNET = None
                 self.assertEqual(crypto.decrypt(first_token), "sk-secret")

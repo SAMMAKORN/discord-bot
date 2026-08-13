@@ -1,5 +1,6 @@
 """Discord slash commands, modals, and interactive views."""
 
+import asyncio
 import logging
 import time
 from typing import ClassVar
@@ -98,6 +99,12 @@ async def _handle_interaction_error(
         logger.warning("Could not deliver error response [reference=%s]", reference)
 
 
+def _invalid_key_message(error: ValueError, thai: bool) -> str:
+    if thai:
+        return "❌ Virtual key ต้องขึ้นต้นด้วย `sk-` มีอย่างน้อย 8 ตัวอักษร และไม่มีช่องว่าง"
+    return f"❌ {error}"
+
+
 def _normalize_virtual_key(raw_value: str) -> str:
     virtual_key = raw_value.strip()
     if len(virtual_key) < 8 or not virtual_key.startswith("sk-"):
@@ -183,8 +190,10 @@ class ModelPaginatorView(discord.ui.View):
 
 async def _send_models_followup(interaction: discord.Interaction, virtual_key: str):
     try:
-        models_response = await api.fetch_models(virtual_key)
-        pricing_lookup = await api.fetch_model_info_all()
+        models_response, pricing_lookup = await asyncio.gather(
+            api.fetch_models(virtual_key),
+            api.fetch_model_info_all(),
+        )
         thai = _is_thai(interaction)
         pages = embeds.format_models_info_embeds(models_response, pricing_lookup, thai=thai)
         for page in pages:
@@ -226,7 +235,12 @@ async def _send_usage_daily_followup(
                 ephemeral=True,
             )
             return
-        activity = await api.fetch_team_daily_activity(team_info["team_id"])
+        activity, team_alias = await asyncio.gather(
+            api.fetch_team_daily_activity(team_info["team_id"]),
+            api.fetch_team_alias(team_info["team_id"]),
+        )
+        if team_alias:
+            team_info["team_alias"] = team_alias
         embed = await embeds.format_token_usage_embed(
             team_info,
             activity,
@@ -530,13 +544,19 @@ class KeySetupModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
+        # Validate before the try below so JSONDecodeError (a ValueError) from an
+        # upstream reply is never reported to the user as a key-format problem.
         try:
             virtual_key = _normalize_virtual_key(self.key_input.value)
+        except ValueError as error:
+            await interaction.edit_original_response(content=_invalid_key_message(error, self.thai))
+            return
+
+        try:
             verified_data = await api.fetch_usage(virtual_key)
             await db.save_user_key(str(interaction.user.id), virtual_key)
-            await interaction.followup.send(
-                "✅ บันทึกคีย์แล้ว" if self.thai else "✅ Virtual key verified and saved.",
-                ephemeral=True,
+            await interaction.edit_original_response(
+                content="✅ บันทึกคีย์แล้ว" if self.thai else "✅ Virtual key verified and saved."
             )
             if self.action == "usage":
                 await _send_usage_followup(interaction, virtual_key, verified_data)
@@ -544,22 +564,14 @@ class KeySetupModal(discord.ui.Modal):
                 await _send_usage_daily_followup(interaction, virtual_key, verified_data)
             else:
                 await _send_models_followup(interaction, virtual_key)
-        except ValueError as error:
-            message = (
-                "❌ Virtual key ต้องขึ้นต้นด้วย `sk-` มีอย่างน้อย 8 ตัวอักษร และไม่มีช่องว่าง"
-                if self.thai
-                else f"❌ {error}"
-            )
-            await interaction.followup.send(message, ephemeral=True)
         except aiohttp.ClientResponseError as error:
-            await interaction.followup.send(
-                embeds._error_message(
+            await interaction.edit_original_response(
+                content=embeds._error_message(
                     error.status,
                     "key",
                     thai=self.thai,
                     user_credential=error.status == 404,
-                ),
-                ephemeral=True,
+                )
             )
         except Exception as error:  # Modal boundary.
             await _handle_interaction_error(interaction, error, "key-setup")
@@ -582,28 +594,26 @@ class ResetKeyModal(discord.ui.Modal):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             virtual_key = _normalize_virtual_key(self.key_input.value)
+        except ValueError as error:
+            await interaction.edit_original_response(content=_invalid_key_message(error, self.thai))
+            return
+
+        try:
             await api.fetch_usage(virtual_key)
             await db.save_user_key(str(interaction.user.id), virtual_key)
-            await interaction.followup.send(
-                "✅ เปลี่ยนคีย์เรียบร้อยแล้ว" if self.thai else "✅ Virtual key verified and updated.",
-                ephemeral=True,
-            )
-        except ValueError as error:
-            message = (
-                "❌ Virtual key ต้องขึ้นต้นด้วย `sk-` มีอย่างน้อย 8 ตัวอักษร และไม่มีช่องว่าง"
+            await interaction.edit_original_response(
+                content="✅ เปลี่ยนคีย์เรียบร้อยแล้ว"
                 if self.thai
-                else f"❌ {error}"
+                else "✅ Virtual key verified and updated."
             )
-            await interaction.followup.send(message, ephemeral=True)
         except aiohttp.ClientResponseError as error:
-            await interaction.followup.send(
-                embeds._error_message(
+            await interaction.edit_original_response(
+                content=embeds._error_message(
                     error.status,
                     "key",
                     thai=self.thai,
                     user_credential=error.status == 404,
-                ),
-                ephemeral=True,
+                )
             )
         except Exception as error:  # Modal boundary.
             await _handle_interaction_error(interaction, error, "reset-key-modal")

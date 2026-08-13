@@ -16,11 +16,23 @@ def _truncate_key(key: str) -> str:
     return f"****{visible}"
 
 
-def _safe_text(value: object, max_length: int = 1024, default: str = "N/A") -> str:
-    """Return escaped, bounded text suitable for Discord embeds."""
+def _safe_text(
+    value: object,
+    max_length: int = 1024,
+    default: str = "N/A",
+    *,
+    escape: bool = True,
+) -> str:
+    """Return bounded text suitable for Discord embeds.
+
+    Pass ``escape=False`` for titles, author names, and field names — Discord does
+    not render markdown there, so escaping only leaks visible backslashes.
+    """
     if value is None or value == "":
         return default
-    result = discord.utils.escape_markdown(str(value), as_needed=True).replace("```", "` ` `")
+    result = str(value)
+    if escape:
+        result = discord.utils.escape_markdown(result, as_needed=True).replace("```", "` ` `")
     if len(result) <= max_length:
         return result
     return result[: max(0, max_length - 3)] + "..."
@@ -145,7 +157,7 @@ async def format_usage_embed(data: dict, *, thai: bool = False) -> discord.Embed
         color=discord.Color.blurple(),
         timestamp=datetime.now(UTC),
     )
-    embed.set_author(name=_safe_text(info.get("key_name"), 256))
+    embed.set_author(name=_safe_text(info.get("key_name"), 256, escape=False))
     embed.add_field(name="🔑 Virtual Key", value=f"```{_truncate_key(key)}```", inline=True)
     if info.get("key_alias") or data.get("key_alias"):
         embed.add_field(
@@ -183,7 +195,9 @@ async def format_usage_embed(data: dict, *, thai: bool = False) -> discord.Embed
 
     rate_parts = []
     rate_fields = (
-        ("rpm_requests", "req/min"),
+        # LiteLLM /key/info reports "rpm_limit"; "rpm_requests" never existed and
+        # silently hid the request-per-minute limit.
+        ("rpm_limit", "req/min"),
         ("tpm_limit", "tok/min"),
         ("max_parallel_requests", "parallel"),
     )
@@ -304,7 +318,9 @@ def format_models_info_embeds(
 
     field_specs: list[tuple[str, str]] = []
     for provider, provider_rows in sorted(groups.items()):
-        base_name = _safe_text(f"{_PROVIDER_EMOJI.get(provider, '🔵')} {provider}", 230)
+        base_name = _safe_text(
+            f"{_PROVIDER_EMOJI.get(provider, '🔵')} {provider}", 230, escape=False
+        )
         lines = []
         for row in provider_rows:
             model_name = _safe_text(row["name"], 350)
@@ -329,7 +345,7 @@ def format_models_info_embeds(
                     if chunk_number == 1
                     else f"{base_name} ({continuation} {chunk_number})"
                 )
-                field_specs.append((_safe_text(name, 256), "\n".join(chunk)))
+                field_specs.append((_safe_text(name, 256, escape=False), "\n".join(chunk)))
                 chunk = []
                 chunk_length = 0
                 chunk_number += 1
@@ -340,7 +356,7 @@ def format_models_info_embeds(
             name = (
                 base_name if chunk_number == 1 else f"{base_name} ({continuation} {chunk_number})"
             )
-            field_specs.append((_safe_text(name, 256), "\n".join(chunk)))
+            field_specs.append((_safe_text(name, 256, escape=False), "\n".join(chunk)))
 
     packed_pages: list[list[tuple[str, str]]] = [[]]
     page_characters = 200
@@ -429,7 +445,9 @@ def _resolve_team_info(key_info: dict) -> dict | None:
     team_id = info.get("team_id")
     if team_id:
         return {
-            "team_alias": info.get("team_alias", "Unknown"),
+            # /key/info does not return team_alias; the caller resolves it via
+            # api.fetch_team_alias() and overwrites this fallback.
+            "team_alias": info.get("team_alias") or "Unknown",
             "team_id": team_id,
             "key_alias": info.get("key_alias") or info.get("key_name", "Unknown"),
         }
@@ -443,11 +461,14 @@ async def format_token_usage_embed(
     thai: bool = False,
 ) -> discord.Embed:
     """Format today's token usage stats for the user's key."""
-    team_alias = _safe_text(team_info.get("team_alias"), 100, "Unknown")
-    key_alias = _safe_text(team_info.get("key_alias"), 100, "Unknown")
+    # Match on the raw alias — _safe_text escapes markdown and truncates, which
+    # would never compare equal to the alias LiteLLM reports in the activity feed.
+    raw_key_alias = str(team_info.get("key_alias") or "Unknown")
+    team_alias = _safe_text(team_info.get("team_alias"), 100, "Unknown", escape=False)
+    key_alias = _safe_text(raw_key_alias, 100, "Unknown", escape=False)
     results = activity.get("results", []) if isinstance(activity, dict) else []
     results = results if isinstance(results, list) else []
-    metrics, key_found = _extract_key_metrics(results, key_alias)
+    metrics, key_found = _extract_key_metrics(results, raw_key_alias)
 
     successful = metrics["successful_requests"]
     failed = metrics["failed_requests"]
