@@ -4,7 +4,7 @@ A Discord bot for checking LiteLLM proxy usage and browsing available models via
 
 ## Changelog
 
-### Unreleased — Production Hardening
+### v1.5.0 — Production Hardening
 
 #### Fixed
 - Correctly accept standard Fernet keys and validate encryption during startup.
