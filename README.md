@@ -16,7 +16,7 @@ A Discord bot for checking LiteLLM proxy usage and browsing available models via
 
 ```bash
 python -m venv venv
-venv\Scripts\activate        # Windows
+source venv/Scripts/activate        # Windows
 # source venv/bin/activate   # macOS / Linux
 ```
 
@@ -178,14 +178,14 @@ For always-online deployment, host on a VPS (Render, Railway, DigitalOcean, etc.
 2. In Coolify, set **Build Pack** to **Docker Compose** and point to `docker-compose.yml`
 3. Configure the following **environment variables** in Coolify's environment settings:
 
-| Variable           | Required | Default                     |
-| ------------------ | -------- | --------------------------- |
-| `BOT_TOKEN`        | Yes      | —                           |
-| `MASTER_KEY`       | Yes      | —                           |
-| `LITELLM_BASE_URL` | No       | `https://litellm.domain.ai` |
-| `DB_PATH`          | No       | `/app/data/bot.db`          |
-| `ENCRYPTION_KEY`   | Recommended | Auto-generated in persistent storage |
-| `ENCRYPTION_KEY_FILE` | No    | `/app/data/.encryption_key` |
+| Variable              | Required    | Default                              |
+| --------------------- | ----------- | ------------------------------------ |
+| `BOT_TOKEN`           | Yes         | —                                    |
+| `MASTER_KEY`          | Yes         | —                                    |
+| `LITELLM_BASE_URL`    | No          | `https://litellm.domain.ai`          |
+| `DB_PATH`             | No          | `/app/data/bot.db`                   |
+| `ENCRYPTION_KEY`      | Recommended | Auto-generated in persistent storage |
+| `ENCRYPTION_KEY_FILE` | No          | `/app/data/.encryption_key`          |
 
 4. Coolify will build and deploy the bot. Database is persisted via a **named Docker volume** (`discord-bot-data` → `/app/data`) and survives redeployments automatically.
 
@@ -213,16 +213,16 @@ docker compose up --build -d
 
 ## Tech Stack
 
-| Component        | Technology                                           |
-| ---------------- | ---------------------------------------------------- |
-| Runtime          | Python 3.12+                                         |
-| Discord Library  | discord.py 2.x                                       |
-| HTTP Client      | aiohttp (shared async session)                       |
-| Database         | aiosqlite (non-blocking async SQLite)                |
-| Encryption       | cryptography (Fernet symmetric encryption)           |
-| Config           | python-dotenv (environment variable loading)         |
-| Timezone         | tzdata (Asia/Bangkok timezone support)               |
-| Containerization | Docker + Docker Compose                              |
+| Component        | Technology                                   |
+| ---------------- | -------------------------------------------- |
+| Runtime          | Python 3.12+                                 |
+| Discord Library  | discord.py 2.x                               |
+| HTTP Client      | aiohttp (shared async session)               |
+| Database         | aiosqlite (non-blocking async SQLite)        |
+| Encryption       | cryptography (Fernet symmetric encryption)   |
+| Config           | python-dotenv (environment variable loading) |
+| Timezone         | tzdata (Asia/Bangkok timezone support)       |
+| Containerization | Docker + Docker Compose                      |
 
 ## Development Checks
 
