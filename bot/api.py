@@ -108,6 +108,10 @@ async def fetch_model_info_all(*, force_refresh: bool = False) -> dict:
             logger.warning("Could not refresh model metadata: %s", exc)
             return _model_info_cache[1] if _model_info_cache else {}
 
+        if not isinstance(data, dict):
+            logger.warning("Model metadata response was not a JSON object")
+            return _model_info_cache[1] if _model_info_cache else {}
+
         lookup = {}
         for entry in data.get("data") or []:
             if not isinstance(entry, dict):

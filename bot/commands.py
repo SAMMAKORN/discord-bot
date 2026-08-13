@@ -14,7 +14,9 @@ from . import api, db, embeds
 
 logger = logging.getLogger(__name__)
 _RATE_LIMIT_SECONDS = 2.0
+_RATE_LIMIT_ENTRY_TTL = 300.0
 _last_action: dict[int, float] = {}
+_last_rate_limit_cleanup = 0.0
 
 
 def _is_thai(interaction: discord.Interaction) -> bool:
@@ -42,7 +44,17 @@ async def safe_send_modal(interaction: discord.Interaction, modal: discord.ui.Mo
 
 
 async def _check_rate_limit(interaction: discord.Interaction) -> bool:
+    global _last_rate_limit_cleanup
     now = time.monotonic()
+    if now - _last_rate_limit_cleanup >= _RATE_LIMIT_ENTRY_TTL:
+        expired_before = now - _RATE_LIMIT_ENTRY_TTL
+        stale_users = [
+            user_id for user_id, timestamp in _last_action.items() if timestamp < expired_before
+        ]
+        for stale_user in stale_users:
+            _last_action.pop(stale_user, None)
+        _last_rate_limit_cleanup = now
+
     user_id = interaction.user.id
     last_action = _last_action.get(user_id, 0.0)
     if now - last_action < _RATE_LIMIT_SECONDS:

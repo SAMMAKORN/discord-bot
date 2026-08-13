@@ -1,7 +1,10 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import discord
 
+from bot import commands
 from bot.commands import LiteLLMBot, ThaiTranslator, _normalize_virtual_key
 
 
@@ -24,3 +27,18 @@ class TranslatorTests(unittest.IsolatedAsyncioTestCase):
         source = discord.app_commands.locale_str("Check your LiteLLM usage statistics")
         translated = await translator.translate(source, discord.Locale.thai, None)
         self.assertEqual(translated, "ดูสถิติการใช้งาน LiteLLM")
+
+
+class RateLimitTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cleanup_removes_stale_users(self):
+        interaction = SimpleNamespace(user=SimpleNamespace(id=42))
+        commands._last_action.clear()
+        commands._last_action[1] = 1.0
+        commands._last_rate_limit_cleanup = 0.0
+
+        with patch("bot.commands.time.monotonic", return_value=1_000.0):
+            allowed = await commands._check_rate_limit(interaction)
+
+        self.assertTrue(allowed)
+        self.assertNotIn(1, commands._last_action)
+        self.assertIn(42, commands._last_action)
