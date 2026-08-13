@@ -1,0 +1,11 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+extend-select = ["BLE", "I", "PERF", "RUF", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+"bot/commands.py" = ["BLE001"] # Discord interaction boundaries must always respond.
+"bot/embeds.py" = ["BLE001"] # FX failures intentionally degrade to USD-only output.
+"tests/*" = ["S101", "S105", "S106"]
