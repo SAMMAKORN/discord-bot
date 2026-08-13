@@ -13,6 +13,7 @@ services:
       LITELLM_BASE_URL: ${LITELLM_BASE_URL:-https://litellm.sam.co.th}
       DB_PATH: ${DB_PATH:-/app/data/bot.db}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      ENCRYPTION_KEY_FILE: ${ENCRYPTION_KEY_FILE:-/app/data/.encryption_key}
 
     volumes:
       - discord-bot-data:/app/data

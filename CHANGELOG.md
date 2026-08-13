@@ -4,6 +4,25 @@ A Discord bot for checking LiteLLM proxy usage and browsing available models via
 
 ## Changelog
 
+### Unreleased — Production Hardening
+
+#### Fixed
+- Correctly accept standard Fernet keys and validate encryption during startup.
+- Persist Docker's generated key with private permissions inside `/app/data`.
+- Never return encrypted database content as an API credential after key rotation.
+- Paginate `/models` within Discord's field and total-character limits.
+- Prefer the longest model pricing prefix to avoid incorrect cost metadata.
+- Validate virtual keys before saving or replacing them.
+- Remove the unused privileged Message Content intent.
+- Normalize malformed/null LiteLLM fields and bound all embed content.
+- Replace the `pgrep` healthcheck with a dependency-free SQLite check.
+
+#### Added
+- Thai response, button, modal, help, and command-description localization.
+- Privacy notice before first-time key entry and disabled expired controls.
+- Per-user throttling plus cached model metadata and exchange rates.
+- Automated tests, pinned dependencies, linting, security checks, and CI.
+
 ### v1.4.1 — Embed Fixes and THB in `/usage-daily`
 
 #### Fixed
