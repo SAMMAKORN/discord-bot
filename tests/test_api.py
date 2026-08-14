@@ -67,3 +67,37 @@ class AsyncApiTests(unittest.IsolatedAsyncioTestCase):
         session = _json_session(None, raises=aiohttp.ClientError("boom"))
         with patch("bot.api.get_session", new=AsyncMock(return_value=session)):
             self.assertIsNone(await api.fetch_team_alias("t1"))
+
+    async def test_daily_activity_follows_pagination(self):
+        # LiteLLM can split one key's rows across pages: page 1 holds the request
+        # counts, page 2 the tokens and spend. Reading page 1 alone shows zeroes.
+        pages = [
+            {
+                "results": [{"date": "2026-08-14", "metrics": {"api_requests": 222}}],
+                "metadata": {"total_tokens": 0, "total_pages": 2, "has_more": True},
+            },
+            {
+                "results": [{"date": "2026-08-14", "metrics": {"api_requests": 889}}],
+                "metadata": {"total_tokens": 8382504, "total_pages": 2, "has_more": False},
+            },
+        ]
+        session = _json_session(None)
+        session.get.return_value.json = AsyncMock(side_effect=pages)
+
+        with patch("bot.api.get_session", new=AsyncMock(return_value=session)):
+            activity = await api.fetch_team_daily_activity("t1")
+
+        self.assertEqual(session.get.call_count, 2)
+        self.assertEqual(len(activity["results"]), 2)
+        self.assertEqual(activity["metadata"]["total_tokens"], 8382504)
+        self.assertEqual(activity["metadata"]["pages_fetched"], 2)
+        self.assertEqual(session.get.call_args_list[-1].kwargs["params"]["page"], 2)
+
+    async def test_daily_activity_stops_when_proxy_never_clears_has_more(self):
+        page = {"results": [], "metadata": {"has_more": True}}
+        session = _json_session(page)
+
+        with patch("bot.api.get_session", new=AsyncMock(return_value=session)):
+            await api.fetch_team_daily_activity("t1")
+
+        self.assertEqual(session.get.call_count, api._DAILY_ACTIVITY_MAX_PAGES)
