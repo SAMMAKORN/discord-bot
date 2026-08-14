@@ -23,6 +23,10 @@ _exchange_rate_cache: tuple[float, float] | None = None
 _MODEL_INFO_TTL = 600
 _EXCHANGE_RATE_TTL = 3600
 _EXCHANGE_RATE_FAILURE_TTL = 60
+# One day of team activity fits in a single large page; the cap only guards
+# against a proxy that keeps reporting has_more.
+_DAILY_ACTIVITY_PAGE_SIZE = 1000
+_DAILY_ACTIVITY_MAX_PAGES = 20
 
 
 async def get_session() -> aiohttp.ClientSession:
@@ -183,15 +187,71 @@ async def fetch_team_alias(team_id: str) -> str | None:
     return str(alias) if alias else None
 
 
+def _merge_activity_metadata(totals: dict, page_metadata: dict) -> dict:
+    """Accumulate the per-page ``total_*`` counters into one metadata block."""
+    for name, value in page_metadata.items():
+        if not name.startswith("total_") or name == "total_pages":
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        totals[name] = totals.get(name, 0) + value
+    return totals
+
+
 async def fetch_team_daily_activity(team_id: str) -> dict:
-    """GET /team/daily/activity — today only."""
+    """GET /team/daily/activity — today only, following every page.
+
+    LiteLLM paginates the per-key breakdown, and a single key's rows can straddle
+    the page boundary: page 1 carries its request counts while the tokens and
+    spend sit on page 2. Reading page 1 alone is what made the dashboard report
+    real request counts next to zero tokens, so walk the pages and merge them.
+    """
     today = datetime.now(ZoneInfo("Asia/Bangkok")).strftime("%Y-%m-%d")
     session = await get_session()
     url = f"{LITELLM_BASE_URL}/team/daily/activity"
-    async with session.get(
-        url,
-        params={"team_id": team_id, "start_date": today, "end_date": today, "page": 1},
-        headers={"Authorization": f"Bearer {MASTER_KEY}"},
-    ) as resp:
-        resp.raise_for_status()
-        return await resp.json()
+    results: list = []
+    metadata: dict = {}
+    page = 1
+
+    while page <= _DAILY_ACTIVITY_MAX_PAGES:
+        async with session.get(
+            url,
+            params={
+                "team_id": team_id,
+                "start_date": today,
+                "end_date": today,
+                "page": page,
+                "page_size": _DAILY_ACTIVITY_PAGE_SIZE,
+            },
+            headers={"Authorization": f"Bearer {MASTER_KEY}"},
+        ) as resp:
+            resp.raise_for_status()
+            payload = await resp.json()
+
+        if not isinstance(payload, dict):
+            logger.warning("Daily activity page %s was not a JSON object", page)
+            break
+
+        page_results = payload.get("results")
+        if isinstance(page_results, list):
+            results.extend(page_results)
+
+        page_metadata = payload.get("metadata")
+        page_metadata = page_metadata if isinstance(page_metadata, dict) else {}
+        _merge_activity_metadata(metadata, page_metadata)
+
+        total_pages = page_metadata.get("total_pages")
+        if not page_metadata.get("has_more"):
+            break
+        if isinstance(total_pages, int) and page >= total_pages:
+            break
+        page += 1
+    else:
+        logger.warning(
+            "Stopped paging /team/daily/activity for %s at the %s-page cap",
+            team_id,
+            _DAILY_ACTIVITY_MAX_PAGES,
+        )
+
+    metadata["pages_fetched"] = page
+    return {"results": results, "metadata": metadata}

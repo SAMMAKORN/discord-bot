@@ -403,8 +403,16 @@ def format_models_info_embed(
     return format_models_info_embeds(models_resp, pricing_data, thai=thai)[0]
 
 
-def _extract_key_metrics(results: list[dict], key_alias: str) -> tuple[dict, bool]:
-    """Sum metrics for an exact key alias across activity results."""
+def _extract_key_metrics(
+    results: list[dict],
+    key_alias: str,
+    team_id: str | None = None,
+) -> tuple[dict, bool]:
+    """Sum metrics for an exact key alias across activity results.
+
+    ``/team/daily/activity`` also reports keys belonging to other teams, so the
+    caller's team id is used to reject an alias that collides across teams.
+    """
     totals = {
         "spend": 0.0,
         "prompt_tokens": 0,
@@ -426,8 +434,12 @@ def _extract_key_metrics(results: list[dict], key_alias: str) -> tuple[dict, boo
             if not isinstance(key_info, dict):
                 continue
             metadata = key_info.get("metadata") or {}
-            remote_alias = metadata.get("key_alias", "") if isinstance(metadata, dict) else ""
+            metadata = metadata if isinstance(metadata, dict) else {}
+            remote_alias = metadata.get("key_alias", "")
             if remote_alias != key_alias:
+                continue
+            remote_team = metadata.get("team_id")
+            if team_id and remote_team and remote_team != team_id:
                 continue
             metrics = key_info.get("metrics") or {}
             if isinstance(metrics, dict):
@@ -468,7 +480,11 @@ async def format_token_usage_embed(
     key_alias = _safe_text(raw_key_alias, 100, "Unknown", escape=False)
     results = activity.get("results", []) if isinstance(activity, dict) else []
     results = results if isinstance(results, list) else []
-    metrics, key_found = _extract_key_metrics(results, raw_key_alias)
+    metrics, key_found = _extract_key_metrics(
+        results,
+        raw_key_alias,
+        str(team_info.get("team_id") or "") or None,
+    )
 
     successful = metrics["successful_requests"]
     failed = metrics["failed_requests"]

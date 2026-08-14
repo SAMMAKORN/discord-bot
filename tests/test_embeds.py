@@ -63,6 +63,45 @@ class EmbedTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(found)
         self.assertEqual(totals["spend"], 0)
 
+    def test_daily_metrics_sum_every_page_slice_of_one_key(self):
+        # Paged activity repeats the same day, each page carrying part of the key.
+        def day(api_requests, total_tokens):
+            return {
+                "breakdown": {
+                    "api_keys": {
+                        "hash": {
+                            "metadata": {"key_alias": "KTK", "team_id": "t1"},
+                            "metrics": {
+                                "api_requests": api_requests,
+                                "total_tokens": total_tokens,
+                            },
+                        }
+                    }
+                }
+            }
+
+        totals, found = embeds._extract_key_metrics([day(222, 0), day(889, 8382504)], "KTK", "t1")
+        self.assertTrue(found)
+        self.assertEqual(totals["api_requests"], 1111)
+        self.assertEqual(totals["total_tokens"], 8382504)
+
+    def test_daily_metrics_ignore_same_alias_from_another_team(self):
+        results = [
+            {
+                "breakdown": {
+                    "api_keys": {
+                        "hash": {
+                            "metadata": {"key_alias": "KTK", "team_id": "other-team"},
+                            "metrics": {"spend": 99.0, "api_requests": 5},
+                        }
+                    }
+                }
+            }
+        ]
+        totals, found = embeds._extract_key_metrics(results, "KTK", "t1")
+        self.assertFalse(found)
+        self.assertEqual(totals["spend"], 0)
+
     async def test_daily_metrics_match_alias_containing_markdown(self):
         alias = "sammakorn_dev_key"
         activity = {

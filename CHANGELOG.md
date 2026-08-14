@@ -4,6 +4,12 @@ A Discord bot for checking LiteLLM proxy usage and browsing available models via
 
 ## Changelog
 
+### v1.5.3 — Fix `/usage-daily` Missing Tokens and Spend
+
+#### Fixed
+- `/usage-daily` reported real request counts next to `0` tokens and `$0.00` spend. LiteLLM paginates the per-key breakdown of `/team/daily/activity`, and a single key's rows can straddle the page boundary — page 1 held the request counts while the tokens and spend sat on page 2. The bot only ever read page 1. It now requests a large page and follows `has_more` (capped at 20 pages), so totals match the LiteLLM dashboard.
+- Ignore keys that share an alias with the user's key but belong to a different team; `/team/daily/activity` also reports other teams' keys in its breakdown.
+
 ### v1.5.2 — Faster Dockerfile Deploys on Coolify
 
 #### Fixed
