@@ -4,6 +4,14 @@ A Discord bot for checking LiteLLM proxy usage and browsing available models via
 
 ## Changelog
 
+### v1.5.1 — Dockerfile-only Coolify Deployment
+
+#### Changed
+- Coolify deployment now uses the **Dockerfile** build pack via **Git Repository (with GitHub App)** instead of the **Docker Compose** build pack.
+- Removed `docker-compose.yml`; local development now uses plain `docker build` / `docker run` instead of `docker compose up`.
+- Updated README deployment instructions accordingly, including configuring persistent storage (`/app/data`) directly in Coolify's Storages tab.
+- Generalized the default `LITELLM_BASE_URL` fallback in `main.py` to a placeholder domain.
+
 ### v1.5.0 — Production Hardening
 
 #### Fixed
