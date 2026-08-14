@@ -4,6 +4,12 @@ A Discord bot for checking LiteLLM proxy usage and browsing available models via
 
 ## Changelog
 
+### v1.5.2 — Faster Dockerfile Deploys on Coolify
+
+#### Fixed
+- Reduced `HEALTHCHECK --start-period` from 30s to 10s — Coolify's Dockerfile/Application build pack blocks the deploy until the container reports healthy (unlike the Docker Compose build pack, which didn't wait), so the old 30s margin doubled observed deploy time for no benefit.
+- Added a BuildKit cache mount for `pip install` so dependency installs stay fast even when the Docker layer cache is cold (e.g. on a freshly created Coolify resource).
+
 ### v1.5.1 — Dockerfile-only Coolify Deployment
 
 #### Changed

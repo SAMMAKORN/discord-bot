@@ -1,10 +1,12 @@
+# syntax=docker/dockerfile:1
 FROM python:3.12-slim AS base
 
 WORKDIR /app
 
 # Install dependencies first (cached layer)
 COPY requirements.txt requirements.lock ./
-RUN pip install --no-cache-dir -r requirements.lock
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.lock
 
 # Copy application (main.py + bot/ package)
 COPY main.py .
@@ -16,7 +18,7 @@ ENV ENCRYPTION_KEY_FILE=/app/data/.encryption_key
 
 # A running container implies the foreground bot process is alive. Verify that
 # its SQLite database exists and is readable without relying on procps/pgrep.
-HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
+HEALTHCHECK --interval=60s --timeout=10s --start-period=10s --retries=3 \
     CMD python -c 'import os, sqlite3; p=os.environ["DB_PATH"]; assert os.path.isfile(p); sqlite3.connect(p).execute("SELECT 1")' || exit 1
 
 # Entrypoint fixes volume mount permissions before running as botuser
