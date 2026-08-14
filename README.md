@@ -160,7 +160,6 @@ For always-online deployment, host on a VPS (Render, Railway, DigitalOcean, etc.
 ├── tests/              # Automated unit and edge-case tests
 ├── .github/workflows/ci.yml # CI checks
 ├── Dockerfile         # Docker build (includes HEALTHCHECK)
-├── docker-compose.yml # Local / Coolify compose (named volume: discord-bot-data)
 ├── .dockerignore
 ├── .env               # Secrets (git-ignored)
 ├── .env.example       # Template for .env
@@ -174,9 +173,10 @@ For always-online deployment, host on a VPS (Render, Railway, DigitalOcean, etc.
 
 ### Docker (Coolify)
 
-1. Push this repo to a Git provider (GitHub, GitLab, etc.)
-2. In Coolify, set **Build Pack** to **Docker Compose** and point to `docker-compose.yml`
-3. Configure the following **environment variables** in Coolify's environment settings:
+1. Push this repo to GitHub.
+2. In Coolify, create a new resource → **Git Repository (with GitHub App)** → select this repo/branch.
+3. Set **Build Pack** to **Dockerfile** (Coolify will detect and use the repo's `Dockerfile` directly — no `docker-compose.yml` needed).
+4. Configure the following **environment variables** in Coolify's environment settings:
 
 | Variable              | Required    | Default                              |
 | --------------------- | ----------- | ------------------------------------ |
@@ -187,7 +187,8 @@ For always-online deployment, host on a VPS (Render, Railway, DigitalOcean, etc.
 | `ENCRYPTION_KEY`      | Recommended | Auto-generated in persistent storage |
 | `ENCRYPTION_KEY_FILE` | No          | `/app/data/.encryption_key`          |
 
-4. Coolify will build and deploy the bot. Database is persisted via a **named Docker volume** (`discord-bot-data` → `/app/data`) and survives redeployments automatically.
+5. Add a **persistent storage** volume mapping `/app/data` (Coolify → resource → **Storages** tab) so the SQLite database and encryption key survive redeployments.
+6. Deploy. Coolify builds the image straight from the `Dockerfile` and runs it.
 
 > **⚠️ Important:** Do **not** set `DB_PATH` to a bare filename (e.g. `users.db`). Always use `/app/data/bot.db` so the file is written inside the persistent volume.
 
@@ -208,7 +209,11 @@ If the container becomes **unhealthy**, Coolify/Docker will automatically restar
 ```bash
 cp .env.example .env
 # Fill in .env with your tokens (use DB_PATH=users.db for local dev)
-docker compose up --build -d
+docker build -t discord-bot .
+docker run -d --name discord-bot --restart unless-stopped \
+  --env-file .env \
+  -v discord-bot-data:/app/data \
+  discord-bot
 ```
 
 ## Tech Stack

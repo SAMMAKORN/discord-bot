@@ -24,7 +24,7 @@ from bot import api, commands, db
 # ── Configuration ────────────────────────────────────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 MASTER_KEY = os.getenv("MASTER_KEY", "")
-LITELLM_BASE_URL = os.getenv("LITELLM_BASE_URL", "https://litellm.sam.co.th")
+LITELLM_BASE_URL = os.getenv("LITELLM_BASE_URL", "https://litellm.domain.ai")
 DB_PATH = os.getenv("DB_PATH", "users.db")
 
 # Initialize module configs
